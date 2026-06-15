@@ -1,0 +1,76 @@
+image:
+  repository: ghcr.io/example/k8s-sre-agent
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+# Transport: "http" (gateway) or "stdio" (not used in-cluster).
+transport: http
+port: 8080
+
+serviceAccount:
+  create: true
+  name: k8s-sre-agent
+  annotations:
+    azure.workload.identity/client-id: "00000000-0000-0000-0000-000000000001"
+
+rbac:
+  create: true
+  # "cluster" → one ClusterRoleBinding; "namespaced" → per-namespace RoleBindings.
+  scope: cluster
+  namespaces: []   # used when scope=namespaced
+
+# The agent's privileges are read-only by RBAC; harden the runtime too.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+resources:
+  requests: { cpu: 100m, memory: 256Mi }
+  limits:   { cpu: "1",  memory: 512Mi }
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+metrics:
+  serviceMonitor:
+    enabled: true        # requires the Prometheus Operator CRDs
+    interval: 30s
+    labels: {}           # e.g. { release: kube-prometheus-stack }
+
+# Inbound auth for the HTTP transport (OIDC / Entra ID).
+auth:
+  oidcIssuer: "https://login.microsoftonline.com/<tenant-id>/v2.0"
+  oidcAudience: "api://k8s-sre-agent"
+  requiredGroups: "sre-readonly,platform-oncall"
+
+# Outbound notifications stay OFF by default.
+notifications:
+  enabled: false
+  slackAllowedChannels: "#sre-incidents"
+
+rag:
+  enabled: false
+  pgvectorDsnSecret: k8s-sre-agent-rag   # secret holding PGVECTOR_DSN
+
+# Reference clusters config (mounted from a ConfigMap). Use the in-cluster default
+# if empty.
+clustersConfig: ""
+
+# Restrict egress to only the backends the agent needs.
+networkPolicy:
+  enabled: true
+  allowedEgressPorts: [443, 9090, 3100, 3000]
+
+# Secrets are projected from the platform secret store; never inline real values.
+existingSecret: k8s-sre-agent-secrets

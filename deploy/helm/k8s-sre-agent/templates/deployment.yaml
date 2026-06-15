@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agent.name" . }}
+  labels: {{- include "agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agent.name" . }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "agent.name" . }}
+        azure.workload.identity/use: "true"
+    spec:
+      serviceAccountName: {{ include "agent.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        seccompProfile:
+          type: {{ .Values.securityContext.seccompProfile.type }}
+      containers:
+        - name: agent
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["{{ .Values.transport }}", "--host", "0.0.0.0", "--port", "{{ .Values.port }}"]
+          ports:
+            - containerPort: {{ .Values.port }}
+          securityContext:
+            readOnlyRootFilesystem: {{ .Values.securityContext.readOnlyRootFilesystem }}
+            allowPrivilegeEscalation: {{ .Values.securityContext.allowPrivilegeEscalation }}
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+          env:
+            - name: ALLOW_NOTIFICATIONS
+              value: {{ .Values.notifications.enabled | quote }}
+            - name: SLACK_ALLOWED_CHANNELS
+              value: {{ .Values.notifications.slackAllowedChannels | quote }}
+            - name: OIDC_ISSUER
+              value: {{ .Values.auth.oidcIssuer | quote }}
+            - name: OIDC_AUDIENCE
+              value: {{ .Values.auth.oidcAudience | quote }}
+            - name: OIDC_REQUIRED_GROUPS
+              value: {{ .Values.auth.requiredGroups | quote }}
+            - name: RAG_ENABLED
+              value: {{ .Values.rag.enabled | quote }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: {{ .Values.port }} }   # checks default cluster reachability
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.port }} }  # process liveness only
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.clustersConfig }}
+            - name: clusters
+              mountPath: /app/config
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.clustersConfig }}
+        - name: clusters
+          configMap:
+            name: {{ include "agent.name" . }}-clusters
+        {{- end }}

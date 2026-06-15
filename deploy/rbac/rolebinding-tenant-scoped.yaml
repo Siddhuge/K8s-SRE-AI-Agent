@@ -1,0 +1,17 @@
+# STRICTER ALTERNATIVE to the cluster-wide binding.
+# Instead of one ClusterRoleBinding, bind the read-only ClusterRole only inside the
+# namespaces a tenant owns. The agent then physically cannot read other tenants'
+# namespaces even if a caller passes them. Repeat per namespace per tenant.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-sre-agent-readonly
+  namespace: payments
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole          # reuse the cluster role, scope it with a RoleBinding
+  name: k8s-sre-agent-readonly
+subjects:
+  - kind: ServiceAccount
+    name: k8s-sre-agent
+    namespace: sre-system

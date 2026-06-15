@@ -1,0 +1,38 @@
+# Two more Istio failures, both log-invisible from the app's perspective.
+#
+# A) mTLS conflict: namespace requires STRICT mTLS, but a DestinationRule DISABLEs
+#    TLS for a host → clients send plaintext to an mTLS-only server → 503 UC.
+# B) Sidecar OOM: the injected istio-proxy is given a 1Mi memory limit (needs ~40Mi)
+#    → OOMKilled → sidecar never Ready → pod cannot serve mesh traffic.
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata: { name: default, namespace: mesh }
+spec:
+  mtls: { mode: STRICT }            # namespace-wide STRICT mTLS
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata: { name: ratings, namespace: mesh }
+spec:
+  host: ratings
+  trafficPolicy:
+    tls: { mode: DISABLE }          # ← conflicts with STRICT PeerAuthentication
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: sidecaroom, namespace: mesh }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: sidecaroom } }
+  template:
+    metadata:
+      labels: { app: sidecaroom }
+      annotations:
+        sidecar.istio.io/proxyMemoryLimit: "12Mi"  # too low for the proxy → it OOMs
+        # (leave the init container's resources at default so init succeeds and the
+        #  failure lands on istio-proxy, not istio-init)
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.25-alpine

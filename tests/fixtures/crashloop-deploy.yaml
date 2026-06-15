@@ -1,0 +1,22 @@
+# Demo workload: a payments API that fails to reach its DB and crashloops.
+# Used by the live demo and the CI integration job.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: payments
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: api } }
+  template:
+    metadata: { labels: { app: api } }
+    spec:
+      containers:
+        - name: api
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - 'echo "starting payments-api v1.3"; echo "connecting to postgres db.payments.svc:5432"; sleep 2; echo "FATAL: could not connect to server: Connection timed out (host=db.payments.svc port=5432)"; exit 1'
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { cpu: 50m, memory: 32Mi }

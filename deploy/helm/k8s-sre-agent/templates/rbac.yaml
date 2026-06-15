@@ -1,0 +1,77 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "agent.serviceAccountName" . }}
+  labels: {{- include "agent.labels" . | nindent 4 }}
+  annotations: {{- toYaml .Values.serviceAccount.annotations | nindent 4 }}
+{{- end }}
+{{- if .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "agent.name" . }}-readonly
+  labels: {{- include "agent.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, nodes, services, endpoints, configmaps,
+                persistentvolumeclaims, persistentvolumes, namespaces, serviceaccounts]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets, statefulsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses, networkpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.istio.io]
+    resources: [virtualservices, destinationrules, gateways, serviceentries]
+    verbs: [get, list, watch]
+  - apiGroups: [security.istio.io]
+    resources: [peerauthentications, authorizationpolicies]
+    verbs: [get, list, watch]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates, certificaterequests, orders, challenges]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods, nodes]
+    verbs: [get, list]
+  - apiGroups: [metadata.k8s.io]   # secret metadata only — never values
+    resources: [secrets]
+    verbs: [get, list]
+{{- if eq .Values.rbac.scope "cluster" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "agent.name" . }}-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agent.name" . }}-readonly
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agent.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- range .Values.rbac.namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "agent.name" $ }}-readonly
+  namespace: {{ . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "agent.name" $ }}-readonly
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "agent.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,62 @@
+# Istio mesh failure scenario.
+# Classic misconfiguration: a VirtualService routes to subset "v2", but the
+# DestinationRule only defines subset "v1" — so requests to v2 get no endpoints
+# and Envoy returns 503 (no healthy upstream). The agent should spot the dangling
+# subset reference from the mesh config alone.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mesh
+  labels:
+    istio-injection: enabled        # auto-inject the Envoy sidecar
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: reviews, namespace: mesh }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: reviews, version: v1 } }
+  template:
+    metadata: { labels: { app: reviews, version: v1 } }
+    spec:
+      containers:
+        - name: reviews
+          image: nginx:1.25-alpine
+          ports: [{ containerPort: 80 }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: reviews, namespace: mesh }
+spec:
+  selector: { app: reviews }
+  ports: [{ port: 80, name: http }]
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata: { name: reviews, namespace: mesh }
+spec:
+  host: reviews
+  subsets:
+    - name: v1                       # only v1 is defined
+      labels: { version: v1 }
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata: { name: reviews, namespace: mesh }
+spec:
+  hosts: ["reviews"]
+  http:
+    - route:
+        - destination:
+            host: reviews
+            subset: v2               # ← v2 has NO matching DestinationRule subset
+          weight: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata: { name: mesh-gw, namespace: mesh }
+spec:
+  selector: { istio: ingressgateway }
+  servers:
+    - port: { number: 80, name: http, protocol: HTTP }
+      hosts: ["reviews.example.com"]

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "k8s-sre": {
+      "command": "python3",
+      "args": ["-m", "k8s_sre_agent.server", "stdio"],
+      "env": {
+        "PYTHONPATH": "/home/sid/K8s-SRE-Agent/src",
+        "CLUSTERS_CONFIG": "/home/sid/K8s-SRE-Agent/config/clusters.yaml"
+      }
+    }
+  }
+}

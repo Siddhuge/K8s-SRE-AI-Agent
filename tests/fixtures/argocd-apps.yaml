@@ -1,0 +1,25 @@
+# ArgoCD Applications for validating the GitOps tools:
+#  - guestbook : auto-synced → Healthy/Synced, with sync history
+#  - broken-app: bad path → ComparisonError (sync Unknown) surfaced in conditions
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: guestbook, namespace: argocd }
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps
+    path: guestbook
+    targetRevision: HEAD
+  destination: { server: https://kubernetes.default.svc, namespace: guestbook }
+  syncPolicy: { automated: { prune: true, selfHeal: true } }
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: { name: broken-app, namespace: argocd }
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/argoproj/argocd-example-apps
+    path: this-path-does-not-exist
+    targetRevision: HEAD
+  destination: { server: https://kubernetes.default.svc, namespace: guestbook }

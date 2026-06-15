@@ -1,0 +1,13 @@
+# Istio ingress Gateway binding failure: a VirtualService bound to a Gateway that
+# does not exist → the route is never programmed at the edge → 404.
+# (The existing mesh-gw Gateway from istio-scenario.yaml already covers the inverse
+#  case: a Gateway with no VirtualService bound to it.)
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata: { name: orphan-route, namespace: mesh }
+spec:
+  hosts: ["shop.example.com"]
+  gateways: ["nonexistent-gw"]        # ← no Gateway named nonexistent-gw exists
+  http:
+    - route:
+        - destination: { host: reviews }

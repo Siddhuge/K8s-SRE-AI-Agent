@@ -1,0 +1,129 @@
+name: ci
+
+on:
+  push: { branches: [main] }
+  pull_request: {}
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev,rag,azure,aws]"
+      - name: Lint
+        run: ruff check src tests
+      - name: Type check
+        run: mypy src || true   # advisory until fully annotated
+      - name: Unit tests (no cluster)
+        run: pytest tests -q -k "not integration"
+      - name: GitHub API tools (live, no cluster)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # authenticated → avoids shared-runner rate limits
+        run: pytest tests/test_integration_github.py -v
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with: { cluster_name: sre-demo }
+      - run: pip install -e ".[dev]"
+      - name: Deploy crashloop demo workload
+        run: |
+          kubectl create namespace payments
+          kubectl -n payments create secret generic db-credentials \
+            --from-literal=host=db.payments.svc --from-literal=password=s3cret
+          kubectl apply -f tests/fixtures/crashloop-deploy.yaml
+          kubectl apply -f tests/fixtures/scenarios.yaml
+          kubectl apply -f tests/fixtures/scenarios2.yaml
+          sleep 50   # let all 9 scenarios reach steady failure states
+      - name: Install Prometheus + Loki
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo add grafana https://grafana.github.io/helm-charts
+          helm repo update
+          kubectl create namespace monitoring
+          helm install prometheus prometheus-community/prometheus -n monitoring \
+            --set alertmanager.enabled=false \
+            --set prometheus-pushgateway.enabled=false \
+            --set server.persistentVolume.enabled=false --wait --timeout 240s
+          helm install loki grafana/loki-stack -n monitoring \
+            --set loki.persistence.enabled=false --set grafana.enabled=false \
+            --set prometheus.enabled=false --wait --timeout 240s
+          kubectl -n monitoring port-forward svc/prometheus-server 9090:80 &
+          kubectl -n monitoring port-forward svc/loki 3100:3100 &
+          sleep 45   # scrape + log shipping
+      - name: Install Istio + mesh scenario
+        run: |
+          helm repo add istio https://istio-release.storage.googleapis.com/charts
+          helm repo update istio
+          kubectl create namespace istio-system
+          helm install istio-base istio/base -n istio-system --set defaultRevision=default --wait --timeout 120s
+          helm install istiod istio/istiod -n istio-system --wait --timeout 180s
+          kubectl apply -f tests/fixtures/istio-scenario.yaml
+          kubectl apply -f tests/fixtures/istio-mtls-sidecar.yaml
+          kubectl apply -f tests/fixtures/istio-gateway.yaml
+          sleep 40   # sidecar OOM + mesh config settle
+      - name: Install ArgoCD + apps
+        run: |
+          kubectl create namespace argocd
+          kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+          kubectl -n argocd patch configmap argocd-cmd-params-cm --type merge -p '{"data":{"server.insecure":"true"}}'
+          kubectl -n argocd rollout restart deploy/argocd-server
+          kubectl -n argocd wait --for=condition=available deploy/argocd-server deploy/argocd-repo-server --timeout=240s
+          kubectl create namespace guestbook
+          kubectl apply -f tests/fixtures/argocd-apps.yaml
+          kubectl -n argocd port-forward svc/argocd-server 8083:80 &
+          sleep 55   # apps reconcile
+          PW=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)
+          TOKEN=$(curl -s http://localhost:8083/api/v1/session -d "{\"username\":\"admin\",\"password\":\"$PW\"}" -H 'Content-Type: application/json' | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          echo "ARGOCD_TOKEN=$TOKEN" >> $GITHUB_ENV
+      - name: Write cluster registry
+        run: |
+          mkdir -p config
+          cat > config/clusters.yaml <<'EOF'
+          defaultCluster: kind-sre-demo
+          clusters:
+            - name: kind-sre-demo
+              tenant: payments
+              auth: { mode: kubeconfig, context: kind-sre-demo }
+              observability:
+                prometheus: http://localhost:9090
+                loki: http://localhost:3100
+              gitops: { argocd: http://localhost:8083, project: default }
+              allowedNamespaces: ["payments", "default", "kube-system", "monitoring", "mesh"]
+          EOF
+          kubectl config rename-context kind-sre-demo kind-sre-demo || true
+      - name: Integration tests (live cluster + observability + istio + gitops)
+        run: |
+          pytest tests/test_integration_kind.py \
+                 tests/test_integration_observability.py \
+                 tests/test_integration_istio.py \
+                 tests/test_integration_gitops.py -v
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t k8s-sre-agent:ci .
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: k8s-sre-agent:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: "true"
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/k8s-sre-agent
+      - run: helm template deploy/helm/k8s-sre-agent > /dev/null

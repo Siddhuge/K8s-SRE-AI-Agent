@@ -1,0 +1,12 @@
+{{- if gt (int .Values.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "agent.name" . }}
+  labels: {{- include "agent.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agent.name" . }}
+{{- end }}

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: k8s-sre-agent
+description: Read-only AI Kubernetes troubleshooting agent (MCP server for Claude)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords: [sre, mcp, claude, kubernetes, rca, troubleshooting]

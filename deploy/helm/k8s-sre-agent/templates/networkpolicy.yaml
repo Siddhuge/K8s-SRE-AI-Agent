@@ -1,0 +1,30 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "agent.name" . }}
+  labels: {{- include "agent.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "agent.name" . }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the MCP gateway/ingress may reach the agent.
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports:
+        - port: {{ .Values.port }}
+  egress:
+    # DNS
+    - to: []
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # kube-apiserver + observability/GitOps backends on explicit ports only.
+    {{- range .Values.networkPolicy.allowedEgressPorts }}
+    - ports:
+        - { protocol: TCP, port: {{ . }} }
+    {{- end }}
+{{- end }}

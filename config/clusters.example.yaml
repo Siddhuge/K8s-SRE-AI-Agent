@@ -1,0 +1,61 @@
+# Cluster registry — the heart of multi-cluster support.
+# Each entry describes how to reach a cluster, how to authenticate, and which
+# observability/GitOps backends serve it. See docs/multi-cluster.md.
+#
+# auth.mode:
+#   kubeconfig        — use a kubeconfig context (dev / on-prem)
+#   in_cluster        — use the mounted ServiceAccount (agent runs inside this cluster)
+#   azure_workload    — AKS + Entra Workload Identity (federated, no static secret)
+#   aws_eks           — EKS + IRSA / aws-iam-authenticator token
+#   oidc_exec         — generic OIDC exec credential plugin
+
+defaultCluster: aks-prod
+
+clusters:
+  - name: aks-prod
+    tenant: payments          # tenant/namespace-isolation key
+    provider: aks
+    region: westeurope
+    auth:
+      mode: azure_workload
+      server: https://aks-prod-dns-xxxx.hcp.westeurope.azmk8s.io:443
+      clientId: 00000000-0000-0000-0000-000000000001   # workload-identity app
+      tenantId: 11111111-1111-1111-1111-111111111111
+    observability:
+      prometheus: http://prometheus.monitoring.svc:9090
+      loki: http://loki.monitoring.svc:3100
+      grafana: https://grafana.aks-prod.example.com
+    gitops:
+      argocd: https://argocd.example.com
+      project: payments
+    # Namespaces this cluster's callers are allowed to read (tenant isolation).
+    allowedNamespaces: ["payments", "payments-staging", "ingress-nginx", "monitoring"]
+
+  - name: eks-prod
+    tenant: checkout
+    provider: eks
+    region: eu-west-1
+    auth:
+      mode: aws_eks
+      server: https://XXXX.gr7.eu-west-1.eks.amazonaws.com
+      clusterName: eks-prod
+      roleArn: arn:aws:iam::123456789012:role/k8s-sre-agent-readonly
+    observability:
+      prometheus: https://prometheus.eks-prod.example.com
+      loki: https://loki.eks-prod.example.com
+    gitops:
+      argocd: https://argocd.example.com
+      project: checkout
+    allowedNamespaces: ["checkout", "kube-system", "monitoring"]
+
+  - name: on-prem-dc1
+    tenant: platform
+    provider: openshift
+    auth:
+      mode: kubeconfig
+      kubeconfig: /etc/k8s-sre-agent/kubeconfigs/dc1.yaml
+      context: dc1-readonly
+    observability:
+      prometheus: http://prometheus.dc1.internal:9090
+      loki: http://loki.dc1.internal:3100
+    allowedNamespaces: ["*"]   # platform tenant may read all namespaces here

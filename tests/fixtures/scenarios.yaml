@@ -1,0 +1,61 @@
+# Failure-scenario workloads for exercising the detectors against real cluster data.
+# Namespace: payments (in allowedNamespaces).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: imagepull, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: imagepull } }
+  template:
+    metadata: { labels: { app: imagepull } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:nonexistent-tag-xyz123   # tag does not exist → ImagePullBackOff
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: oom, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: oom } }
+  template:
+    metadata: { labels: { app: oom } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "tail /dev/zero"]   # unbounded memory → OOMKilled
+          resources: { limits: { memory: 16Mi }, requests: { memory: 16Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: configerror, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: configerror } }
+  template:
+    metadata: { labels: { app: configerror } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          envFrom:
+            - configMapRef: { name: missing-config }   # ConfigMap does not exist
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: pending, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: pending } }
+  template:
+    metadata: { labels: { app: pending } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          resources: { requests: { cpu: "1000" } }   # 1000 cores → unschedulable
