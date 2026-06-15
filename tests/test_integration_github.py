@@ -24,6 +24,10 @@ pytestmark = pytest.mark.skipif(not _api_ok(), reason="GitHub API unreachable or
 
 
 def _tools():
+    # Register through GuardedMCP so a transient GitHub error (504/timeout/rate-limit)
+    # comes back as a structured dict instead of raising — lets the test skip cleanly.
+    from k8s_sre_agent.resilience import GuardedMCP
+
     captured = {}
 
     class M:
@@ -34,19 +38,27 @@ def _tools():
             return d
 
     from k8s_sre_agent.tools import cicd
-    cicd.register(M())
+    cicd.register(GuardedMCP(M()))
     return captured
+
+
+def _skip_if_transient(out):
+    """The GitHub API is a live external dependency — skip on transient/upstream errors
+    (504/timeout/rate-limit) rather than failing the suite on a flaky network."""
+    if isinstance(out, dict) and out.get("error") in {"upstream_error", "timeout", "unreachable", "forbidden", "unauthenticated"}:
+        pytest.skip(f"GitHub API transient error: {out.get('error')} — {out.get('message')}")
 
 
 def test_github_actions_runs_live():
     runs = _tools()["github_actions_runs"](repo=REPO, limit=3)
+    _skip_if_transient(runs)
     assert isinstance(runs, list) and runs, "expected recent workflow runs"
-    r = runs[0]
-    assert {"id", "status", "conclusion", "head_sha"} <= r.keys()
+    assert {"id", "status", "conclusion", "head_sha"} <= runs[0].keys()
 
 
 def test_compare_deployments_live_returns_real_diff():
     cmp = _tools()["compare_deployments"](repo=REPO, base_sha="v2.13.0", head_sha="v2.13.1")
+    _skip_if_transient(cmp)
     assert cmp["ahead_by"] == 7
     assert cmp["commits"] and cmp["changed_files"]
     assert "VERSION" in cmp["changed_files"]
@@ -54,4 +66,5 @@ def test_compare_deployments_live_returns_real_diff():
 
 def test_recent_deployments_live():
     deps = _tools()["recent_deployments"](repo=REPO, limit=3)
+    _skip_if_transient(deps)
     assert isinstance(deps, list)  # may be empty for some repos; shape must be a list
