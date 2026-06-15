@@ -39,9 +39,10 @@ def register(mcp) -> None:
             params["status"] = status
         headers = _gl_headers(settings)
         data = get_json(f"{settings.gitlab_url.rstrip('/')}/api/v4/projects/{pid}/pipelines", params=params, headers=headers)
+        items: list = data if isinstance(data, list) else []
         return [
             {"id": p["id"], "status": p["status"], "ref": p["ref"], "sha": p["sha"][:8], "created_at": p["created_at"], "web_url": p["web_url"]}
-            for p in (data if isinstance(data, list) else [])
+            for p in items
         ]
 
     @mcp.tool()
@@ -71,9 +72,10 @@ def register(mcp) -> None:
         if environment:
             params["environment"] = environment
         data = get_json(f"https://api.github.com/repos/{repo}/deployments", params=params, headers=headers)
+        items: list = data if isinstance(data, list) else []
         return [
             {"id": d["id"], "environment": d["environment"], "ref": d["ref"], "sha": d["sha"][:8], "created_at": d["created_at"]}
-            for d in (data if isinstance(data, list) else [])
+            for d in items
         ]
 
     @mcp.tool()

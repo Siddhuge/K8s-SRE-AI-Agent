@@ -15,7 +15,7 @@ jobs:
       - name: Lint
         run: ruff check src tests
       - name: Type check
-        run: mypy src || true   # advisory until fully annotated
+        run: mypy src
       - name: Unit tests (no cluster)
         run: pytest tests -q -k "not integration"
       - name: GitHub API tools (live, no cluster)
