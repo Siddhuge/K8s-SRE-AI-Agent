@@ -1,0 +1,53 @@
+# Policy-level enforcement of the read-only boundary (defense in depth on top of the
+# RBAC ClusterRole). Requires Kyverno (https://kyverno.io). A Gatekeeper/OPA
+# ConstraintTemplate equivalent is noted at the bottom.
+#
+# What it stops: someone (or a compromised pipeline) creating a RoleBinding/
+# ClusterRoleBinding that grants the k8s-sre-agent ServiceAccount any role OTHER than
+# the approved read-only ClusterRole — i.e. it makes privilege escalation of the
+# diagnostic agent impossible without first removing this policy (an auditable,
+# security-reviewed change).
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: k8s-sre-agent-readonly-lock
+  annotations:
+    policies.kyverno.io/title: Lock the SRE agent ServiceAccount to read-only
+    policies.kyverno.io/category: Security, RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      The k8s-sre-agent ServiceAccount may only be bound to the approved read-only
+      ClusterRole. Any binding to another role is rejected, preventing escalation to
+      write/exec/scale or secret-value access.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: agent-sa-only-readonly-binding
+      match:
+        any:
+          - resources:
+              kinds: ["RoleBinding", "ClusterRoleBinding"]
+      preconditions:
+        all:
+          # Only act on bindings that include the agent's ServiceAccount as a subject.
+          - key: "{{ request.object.subjects[] | [?kind=='ServiceAccount' && name=='k8s-sre-agent' && namespace=='sre-system'] | length(@) }}"
+            operator: GreaterThan
+            value: 0
+      validate:
+        message: >-
+          The 'k8s-sre-agent' ServiceAccount (sre-system) may only be bound to the
+          read-only ClusterRole 'k8s-sre-agent-readonly'. Binding it to any other role
+          is forbidden by policy.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.roleRef.name }}"
+                operator: NotEquals
+                value: "k8s-sre-agent-readonly"
+---
+# Gatekeeper/OPA alternative (sketch — install instead of the above if you run
+# Gatekeeper). A ConstraintTemplate `K8sSreAgentReadonlyLock` with Rego that denies
+# admission of any RoleBinding/ClusterRoleBinding whose subjects include
+# system:serviceaccount:sre-system:k8s-sre-agent and whose roleRef.name is not
+# "k8s-sre-agent-readonly". The Kyverno policy above is the maintained version.

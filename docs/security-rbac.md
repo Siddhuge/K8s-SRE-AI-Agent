@@ -99,3 +99,31 @@ observability/GitOps ports. ([deploy/helm](../deploy/helm/k8s-sre-agent))
 * The agent emits structured JSON logs (tool, cluster, namespace, principal) to stderr.
 * RCA detectors are **rule-based and explainable** — each conclusion lists weighted
   evidence, so an auditor can see *why* the agent reached a verdict, not just the verdict.
+
+## 7. Policy enforcement (defense in depth)
+
+RBAC already denies writes by omission. To stop anyone from *re-granting* privileges
+later, [deploy/policy/kyverno-readonly-lock.yaml](../deploy/policy/kyverno-readonly-lock.yaml)
+is a Kyverno `ClusterPolicy` (Enforce) that rejects any RoleBinding/ClusterRoleBinding
+binding the `k8s-sre-agent` ServiceAccount to anything other than the approved
+`k8s-sre-agent-readonly` ClusterRole. Privilege escalation of the agent then requires
+first removing the policy — an auditable, security-reviewed change. (A Gatekeeper/OPA
+equivalent is sketched in the same file.)
+
+## 8. Security self-review (findings)
+
+A review of the read-only boundary and the read paths:
+
+* **No tool ever returns Secret values.** `k8s_get_secrets_metadata` returns name/type/
+  key-names/age only; the RBAC role grants secrets only via `metadata.k8s.io`. Verified
+  by code audit (no `secret.data` value access anywhere) and by a live SubjectAccessReview
+  test (`get secrets` in the core group is **denied**).
+* **The API server enforces the boundary** — proven (not assumed) by
+  [tests/test_integration_rbac.py](../tests/test_integration_rbac.py): reads allowed;
+  `delete`/`create`/`patch`/`pods/exec`/`get secrets`/`update`/`create namespaces` all denied.
+* **Only two tools can leave the read-only boundary** — `slack_post` / `teams_post` —
+  and both refuse unless `ALLOW_NOTIFICATIONS=true` *and* the channel is allow-listed.
+* **Inbound auth fails safe** — missing or malformed bearer tokens both return 401
+  (no 500 / internal-detail leak); validated live.
+* **No internal detail leaks to the model** — the tool guard returns structured error
+  *kinds* (`forbidden`, `unreachable`, …), never tracebacks, hosts, or tokens.

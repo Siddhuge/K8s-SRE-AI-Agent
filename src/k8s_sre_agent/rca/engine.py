@@ -34,6 +34,8 @@ _SEVERITY_BY_ISSUE = {
     "Node MemoryPressure": Severity.high,
     "Node DiskPressure": Severity.high,
     "CrashLoopBackOff": Severity.high,
+    "Init Container Failure": Severity.high,
+    "Job Failed": Severity.medium,
     "OOMKilled": Severity.high,
     "ImagePullBackOff": Severity.medium,
     "ErrImagePull": Severity.medium,
@@ -72,21 +74,39 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
 
     ctx: dict = {"cluster": mgr.resolve(cluster).name, "namespace": namespace, "subject": subject}
 
-    # Resolve subject → concrete pod(s).
+    # Resolve subject → concrete pod(s): a pod, a Deployment, or a Job.
     pod_names: list[str] = []
+    resolved = False
     try:
         core.read_namespaced_pod(subject, namespace)
         pod_names = [subject]
-    except Exception:  # subject is likely a deployment/selector
+        resolved = True
+    except Exception:
         try:
             dep = apps.read_namespaced_deployment(subject, namespace)
             sel = ",".join(f"{k}={v}" for k, v in (dep.spec.selector.match_labels or {}).items())
-            pods = core.list_namespaced_pod(namespace, label_selector=sel)
-            pod_names = [p.metadata.name for p in pods.items]
-        except Exception as exc:  # noqa: BLE001
-            log.warning("could not resolve subject", extra={"subject": subject, "err": str(exc)})
+            pod_names = [p.metadata.name for p in core.list_namespaced_pod(namespace, label_selector=sel).items]
+            resolved = True
+        except Exception:
+            try:  # a Job — pods are labelled with the job name
+                job = mgr.clients(cluster).batch_v1.read_namespaced_job(subject, namespace)
+                ctx["job"] = {
+                    "name": subject,
+                    "failed": job.status.failed or 0,
+                    "succeeded": job.status.succeeded or 0,
+                    "conditions": [{"type": c.type, "reason": c.reason, "message": c.message}
+                                   for c in (job.status.conditions or [])],
+                }
+                pods = core.list_namespaced_pod(namespace, label_selector=f"job-name={subject}")
+                pod_names = [p.metadata.name for p in pods.items]
+                resolved = True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not resolve subject", extra={"subject": subject, "err": str(exc)})
+    ctx["resolved"] = resolved
 
-    # Pods overview (status/restarts/reasons).
+    # Pods overview (status/restarts/reasons). If the subject resolved, scope strictly
+    # to its pods; if it did NOT resolve, do NOT fall back to all namespace pods — that
+    # cross-contaminates the RCA with unrelated workloads (a real bug found live).
     all_pods = core.list_namespaced_pod(namespace)
     ctx["pods"] = [
         {
@@ -96,9 +116,14 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
                             if c.state and c.state.waiting), p.status.reason),
             "last_terminated": next((c.last_state.terminated.reason for c in (p.status.container_statuses or [])
                                      if c.last_state and c.last_state.terminated), None),
+            # init container failure signals (the engine used to ignore these entirely)
+            "init_waiting": next((c.state.waiting.reason for c in (p.status.init_container_statuses or [])
+                                  if c.state and c.state.waiting), None),
+            "init_terminated": next((c.last_state.terminated.reason for c in (p.status.init_container_statuses or [])
+                                     if c.last_state and c.last_state.terminated and c.last_state.terminated.exit_code), None),
         }
         for p in all_pods.items
-        if not pod_names or p.metadata.name in pod_names
+        if p.metadata.name in pod_names
     ]
 
     target_pod = pod_names[0] if pod_names else None
@@ -128,6 +153,17 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
         ctx["describe"] = results["describe"]
         ctx["logs"] = results["logs"]
         ctx["previous_logs"] = results["previous_logs"]
+        # If an init container is failing, the real error is in ITS logs (not the app
+        # container, which never starts). Read the failing init container's logs.
+        failing_init = next(
+            (c for c in ctx["describe"].get("init_containers", [])
+             if c.get("waiting_reason") in ("CrashLoopBackOff", "Error") or c.get("last_terminated_reason")),
+            None,
+        )
+        if failing_init:
+            ctx["init_logs"] = _read_logs(core, namespace, target_pod, previous=False,
+                                          container=failing_init["name"])
+            ctx["failing_init_container"] = failing_init["name"]
 
     # Service names (lets detectors check whether a dependency's Service exists).
     ctx["services"] = [s.metadata.name for s in results["services"].items]
@@ -208,15 +244,27 @@ def kubernetes_describe(core, namespace: str, pod: str) -> dict:
             "restart_count": (st.restart_count if st else 0),
             "ready": (st.ready if st else None),   # container readiness (sidecar checks)
         })
-    return {"containers": containers, "node": p.spec.node_name}
+    init_statuses = {c.name: c for c in (p.status.init_container_statuses or [])}
+    init_containers = []
+    for c in (p.spec.init_containers or []):
+        st = init_statuses.get(c.name)
+        term = st.last_state.terminated if st and st.last_state else None
+        init_containers.append({
+            "name": c.name, "image": c.image,
+            "waiting_reason": (st.state.waiting.reason if st and st.state and st.state.waiting else None),
+            "last_terminated_reason": (term.reason if term else None),
+            "last_exit_code": (term.exit_code if term else None),
+        })
+    return {"containers": containers, "init_containers": init_containers, "node": p.spec.node_name}
 
 
-def _read_logs(core, namespace: str, pod: str, previous: bool, tail: int = 120) -> list[str]:
+def _read_logs(core, namespace: str, pod: str, previous: bool, tail: int = 120, container: str = "") -> list[str]:
     try:
         # _preload_content=False avoids a kube-client deserialization quirk that can
         # return the str repr of bytes; read + decode the raw stream instead.
         resp = core.read_namespaced_pod_log(
-            pod, namespace, tail_lines=tail, previous=previous, _preload_content=False
+            pod, namespace, container=(container or None), tail_lines=tail,
+            previous=previous, _preload_content=False,
         )
         return resp.data.decode("utf-8", "replace").splitlines()
     except Exception:  # no previous container, or restricted

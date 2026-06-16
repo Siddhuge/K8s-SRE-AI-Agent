@@ -41,7 +41,8 @@ jobs:
           kubectl apply -f tests/fixtures/crashloop-deploy.yaml
           kubectl apply -f tests/fixtures/scenarios.yaml
           kubectl apply -f tests/fixtures/scenarios2.yaml
-          sleep 50   # let all 9 scenarios reach steady failure states
+          kubectl apply -f tests/fixtures/scenarios3.yaml
+          sleep 55   # let all scenarios reach steady failure states
       - name: Install Prometheus + Loki
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts

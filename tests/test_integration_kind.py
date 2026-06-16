@@ -94,6 +94,9 @@ SCENARIOS = {
     "dnsfail": {"DNS Resolution Failure"},
     "tlsfail": {"TLS Certificate Issue"},
     "pvcpending": {"Pending Pods (PVC)"},
+    # third wave (tests/fixtures/scenarios3.yaml)
+    "initfail": {"Init Container Failure"},
+    "readinessfail": {"Readiness Probe Failure"},
 }
 
 
@@ -112,6 +115,19 @@ def test_scenario_classified_correctly(subject, expected):
     # 60 floor: the durable liveness-probe fallback (used once Unhealthy events expire)
     # is an honest inference at ~62; event-backed detectors score higher.
     assert report.confidence >= 60
+
+
+def test_job_failure_live():
+    """The 'migrate' Job (scenarios3) — a Job subject must resolve and be diagnosed."""
+    from k8s_sre_agent.clusters import manager
+    try:
+        manager().clients(CLUSTER).batch_v1.read_namespaced_job("migrate", NS)
+    except Exception:
+        pytest.skip("migrate Job not deployed")
+    from k8s_sre_agent.rca.engine import diagnose
+    r = diagnose(CLUSTER, NS, "migrate")
+    assert r.issue == "Job Failed"
+    assert r.confidence >= 80
 
 
 def test_events_are_scoped_to_subject():

@@ -50,6 +50,12 @@ class ClusterClients:
 
         return client.CustomObjectsApi(self.api_client)
 
+    @property
+    def batch_v1(self):
+        from kubernetes import client
+
+        return client.BatchV1Api(self.api_client)
+
 
 class ClusterManager:
     def __init__(self) -> None:

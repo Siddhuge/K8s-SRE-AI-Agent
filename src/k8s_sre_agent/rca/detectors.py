@@ -218,6 +218,68 @@ def oom_killed(ctx: dict) -> Hypothesis | None:
     return h
 
 
+@detector
+def init_container_failure(ctx: dict) -> Hypothesis | None:
+    """An init container is failing, so the pod never reaches its app containers
+    (Init:CrashLoopBackOff / Init:Error). The real error lives in the init logs."""
+    inits = ctx.get("describe", {}).get("init_containers", [])
+    failing = next(
+        (c for c in inits
+         if c.get("waiting_reason") in ("CrashLoopBackOff", "Error")
+         or (c.get("last_terminated_reason") and c.get("last_exit_code"))),
+        None,
+    )
+    if failing is None and not any(
+        p.get("init_waiting") in ("CrashLoopBackOff", "Error") or p.get("init_terminated")
+        for p in ctx.get("pods", [])
+    ):
+        return None
+
+    name = (failing or {}).get("name") or ctx.get("failing_init_container") or "init"
+    h = Hypothesis(
+        issue="Init Container Failure",
+        confidence=85,
+        root_cause=f"Init container '{name}' is failing, so the pod never starts its app containers.",
+        suggested_fix=f"Inspect init container '{name}' logs and its command/dependencies (migration, config fetch, wait-for-dependency); fix the init step.",
+    )
+    h.evidence.append(Evidence(source="k8s", summary=f"Init container '{name}' failing (Init:CrashLoopBackOff/Error)", weight=0.6))
+    init_logs = ctx.get("init_logs", [])
+    err = next((ln for ln in reversed(init_logs)
+                if any(k in ln.lower() for k in ("error", "fatal", "fail", "cannot", "denied", "lock", "timeout"))),
+               init_logs[-1] if init_logs else "")
+    if err:
+        h.confidence = 90
+        h.evidence.append(Evidence(source="logs", summary=f"init log: {err[:160]}", weight=0.3))
+    return h
+
+
+@detector
+def job_failure(ctx: dict) -> Hypothesis | None:
+    """A batch Job exceeded its backoffLimit / has a Failed condition."""
+    job = ctx.get("job")
+    if not job:
+        return None
+    failed = job.get("failed", 0)
+    cond = next((c for c in job.get("conditions", []) if c.get("type") == "Failed"), None)
+    if not failed and not cond:
+        return None
+    detail = f": {cond['message']}" if cond and cond.get("message") else "."
+    h = Hypothesis(
+        issue="Job Failed",
+        confidence=85,
+        root_cause=f"Job '{job['name']}' failed ({failed} failed pod(s)){detail}",
+        suggested_fix="Inspect the failed pod's logs; fix the job command/input and re-run — a Job past its backoffLimit does not retry on its own.",
+    )
+    h.evidence.append(Evidence(source="k8s", summary=f"Job {job['name']}: failed={failed}", weight=0.5))
+    raw = ctx.get("logs", []) + ctx.get("previous_logs", [])
+    err = next((ln for ln in reversed(raw)
+                if any(k in ln.lower() for k in ("fatal", "error", "fail", "exception", "cannot", "denied"))), "")
+    if err:
+        h.confidence = 90
+        h.evidence.append(Evidence(source="logs", summary=f"job log: {err[:160]}", weight=0.35))
+    return h
+
+
 # App-level fatal signals — their ABSENCE (with a liveness probe + restarts) points
 # at an external killer (the probe) rather than the app crashing on its own.
 _APP_ERROR_SIGNALS = (
@@ -278,8 +340,16 @@ def probe_failure(ctx: dict) -> Hypothesis | None:
 
 @detector
 def pending_unschedulable(ctx: dict) -> Hypothesis | None:
-    pending = [p for p in ctx.get("pods", []) if p.get("phase") == "Pending"]
+    # A pod stuck in Init (failing init container) is *scheduled* — it's an init
+    # problem, not a scheduling one. Don't claim "unschedulable" for it.
+    init_failing = any(
+        p.get("init_waiting") in ("CrashLoopBackOff", "Error") or p.get("init_terminated")
+        for p in ctx.get("pods", [])
+    )
     sched = [e for e in _event_reasons(ctx) if e.get("reason") == "FailedScheduling"]
+    pending = [p for p in ctx.get("pods", []) if p.get("phase") == "Pending"]
+    if init_failing and not sched:
+        return None
     if not pending and not sched:
         return None
     msg = (sched[0]["message"] if sched else "").lower()

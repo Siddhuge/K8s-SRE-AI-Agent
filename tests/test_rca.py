@@ -174,6 +174,38 @@ def test_crashloop_durable_signal_when_sampled_mid_restart():
     assert "database" in top.root_cause.lower()
 
 
+def test_init_container_failure_beats_pending():
+    """A pod stuck in Init (failing init container) is an init problem, not Pending."""
+    ctx = {
+        "describe": {"init_containers": [
+            {"name": "init-migrate", "waiting_reason": "CrashLoopBackOff", "last_terminated_reason": "Error", "last_exit_code": 1},
+        ], "containers": []},
+        "pods": [{"phase": "Pending", "init_waiting": "CrashLoopBackOff"}],
+        "init_logs": ["ERROR: migration lock held by another process"],
+        "failing_init_container": "init-migrate",
+        "events": [], "logs": [], "previous_logs": [],
+    }
+    top = evaluate(ctx)[0]
+    assert top.issue == "Init Container Failure"
+    assert "init-migrate" in top.root_cause
+    assert top.confidence >= 85
+    assert all(h.issue != "Pending Pods" for h in evaluate(ctx))  # pending suppressed
+
+
+def test_job_failure_detected():
+    ctx = {
+        "job": {"name": "migrate", "failed": 2,
+                "conditions": [{"type": "Failed", "reason": "BackoffLimitExceeded", "message": "Job has reached the specified backoff limit"}]},
+        "describe": {"containers": [], "init_containers": []},
+        "pods": [{"reason": "Error", "last_terminated": "Error"}],
+        "logs": ['FATAL: relation "orders" already exists'], "previous_logs": [], "events": [],
+    }
+    top = evaluate(ctx)[0]
+    assert top.issue == "Job Failed"
+    assert "migrate" in top.root_cause
+    assert any("orders" in e.summary for e in top.evidence)
+
+
 def test_no_signature_returns_empty():
     ctx = {"describe": {"containers": []}, "pods": [{"phase": "Running"}], "events": [], "logs": [], "previous_logs": []}
     assert evaluate(ctx) == []

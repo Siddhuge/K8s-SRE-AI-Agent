@@ -1,0 +1,52 @@
+# Third wave: init-container failure, readiness-probe failure, Job failure.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: initfail, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: initfail } }
+  template:
+    metadata: { labels: { app: initfail } }
+    spec:
+      initContainers:
+        - name: init-migrate
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["echo 'running db migration check'; echo 'ERROR: migration lock held by another process'; exit 1"]
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: readinessfail, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: readinessfail } }
+  template:
+    metadata: { labels: { app: readinessfail } }
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.25-alpine          # serves on :80
+          readinessProbe:
+            httpGet: { path: /ready, port: 8080 }   # wrong port → never Ready
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: migrate, namespace: payments }
+spec:
+  backoffLimit: 1
+  template:
+    metadata: { labels: { app: migrate } }
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["echo 'applying migration v1.3'; echo 'FATAL: relation \"orders\" already exists'; exit 1"]
