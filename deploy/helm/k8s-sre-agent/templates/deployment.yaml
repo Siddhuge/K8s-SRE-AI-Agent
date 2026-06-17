@@ -13,6 +13,11 @@ spec:
       labels:
         app.kubernetes.io/name: {{ include "agent.name" . }}
         azure.workload.identity/use: "true"
+      annotations:
+        # Annotation-based scrape (for Prometheus without the Operator/ServiceMonitor).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.port | quote }}
+        prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: {{ include "agent.serviceAccountName" . }}
       automountServiceAccountToken: true

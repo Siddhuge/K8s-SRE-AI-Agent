@@ -1,0 +1,16 @@
+# Pinned versions for reproducible builds. pyproject.toml declares supported RANGES;
+# this file pins the exact set validated in CI / on the live kind cluster.
+#   pip install -e . -c constraints.txt
+# Refresh by re-running `pip freeze` after an intentional upgrade + green CI.
+mcp==1.27.2
+kubernetes==36.0.2
+httpx==0.28.1
+pydantic==2.12.5
+pydantic-settings==2.14.1
+PyYAML==6.0.3
+python-json-logger==4.1.0
+tenacity==9.1.4
+starlette==1.0.0
+uvicorn==0.42.0
+PyJWT==2.12.1
+prometheus-client==0.20.0

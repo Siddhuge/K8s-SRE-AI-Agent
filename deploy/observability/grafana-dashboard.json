@@ -1,0 +1,61 @@
+{
+  "uid": "k8s-sre-agent",
+  "title": "K8s SRE Agent — self metrics",
+  "tags": ["k8s-sre-agent"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "title": "Tool call rate (by tool)", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (tool) (rate(sre_agent_tool_calls_total[5m]))", "legendFormat": "{{tool}}" }
+      ]
+    },
+    {
+      "id": 2, "title": "Tool error rate (outcome != ok)", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(sre_agent_tool_calls_total{outcome!=\"ok\"}[5m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 3, "title": "Tool latency p95 (s)", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, tool) (rate(sre_agent_tool_duration_seconds_bucket[5m])))", "legendFormat": "{{tool}}" }
+      ]
+    },
+    {
+      "id": 4, "title": "Auth decisions", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(sre_agent_auth_total[5m]))", "legendFormat": "{{outcome}}" }
+      ]
+    },
+    {
+      "id": 5, "title": "Rate-limited requests", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "refId": "A", "expr": "sum (rate(sre_agent_ratelimited_total[5m]))", "legendFormat": "rate-limited" }
+      ]
+    }
+  ]
+}

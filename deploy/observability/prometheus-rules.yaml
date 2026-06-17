@@ -1,0 +1,43 @@
+# Alerting rules for the agent's own health (Prometheus Operator PrometheusRule).
+# Backed by the metrics the agent exposes at /metrics (observability.py).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: k8s-sre-agent
+  labels:
+    app.kubernetes.io/name: k8s-sre-agent
+    release: kube-prometheus-stack   # match your Prometheus Operator's ruleSelector
+spec:
+  groups:
+    - name: k8s-sre-agent
+      rules:
+        - alert: SreAgentHighToolErrorRate
+          expr: |
+            sum(rate(sre_agent_tool_calls_total{outcome!="ok"}[10m]))
+              / clamp_min(sum(rate(sre_agent_tool_calls_total[10m])), 0.001) > 0.25
+          for: 10m
+          labels: { severity: warning }
+          annotations:
+            summary: "SRE agent tool error rate >25%"
+            description: "More than 25% of tool calls are failing — a backend (Prometheus/Loki/ArgoCD/cluster) is likely unreachable or misconfigured."
+        - alert: SreAgentAuthFailureSpike
+          expr: sum(rate(sre_agent_auth_total{outcome=~"rejected|error|missing_token"}[5m])) > 1
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "SRE agent inbound auth failures elevated"
+            description: "Sustained rejected/missing tokens — misconfigured client, expired credentials, or a probing/abuse attempt."
+        - alert: SreAgentRateLimiting
+          expr: sum(increase(sre_agent_ratelimited_total[5m])) > 0
+          for: 5m
+          labels: { severity: info }
+          annotations:
+            summary: "SRE agent is rate-limiting a caller"
+            description: "A principal is exceeding the token-bucket limit — a runaway automation or misbehaving client."
+        - alert: SreAgentDown
+          expr: up{job=~".*k8s-sre-agent.*"} == 0
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "SRE agent is not being scraped / down"
+            description: "Prometheus cannot scrape the agent's /metrics endpoint."

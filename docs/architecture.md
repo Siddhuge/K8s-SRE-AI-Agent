@@ -32,6 +32,28 @@
    └─────────┘    └─────────┘   └─────────┘    └──────────┘   └──────────┘
 ```
 
+```mermaid
+flowchart TB
+  Claude["Claude (Opus 4.8 RCA / Sonnet 4.6 triage)"]
+  subgraph Agent["k8s-sre-agent (MCP server, read-only)"]
+    MW["HTTP transport: OIDC auth · rate limit · /healthz /readyz /metrics"]
+    Tools["Tools: k8s · logs · metrics · gitops · cicd · istio · incidents"]
+    RCA["RCA engine: collect → correlate → detect → score"]
+    RAG["RAG (pgvector, tenant-scoped)"]
+    CM["ClusterManager: context switch + tenant guard"]
+    MW --> Tools --> CM
+    RCA --> CM
+    RCA -.-> RAG
+    Tools --> RCA
+  end
+  Claude <-->|MCP tools/call| MW
+  Claude <-->|stdio| Tools
+  CM -->|read-only SA| AKS[(AKS-prod)]
+  CM -->|read-only SA| EKS[(EKS-prod)]
+  CM -->|read-only SA| OnPrem[(on-prem)]
+  Tools -->|HTTP| Obs[(Prometheus · Loki · Grafana · ArgoCD · GitLab/GitHub)]
+```
+
 ## 2. Component responsibilities
 
 | Component | Responsibility |
