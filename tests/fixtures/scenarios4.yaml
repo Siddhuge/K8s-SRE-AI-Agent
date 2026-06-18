@@ -1,0 +1,89 @@
+# Fourth wave: ephemeral-storage eviction, StatefulSet (PVC), HPA can't scale, PDB blocking.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ephemeral, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: ephemeral } }
+  template:
+    metadata: { labels: { app: ephemeral } }
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.36
+          command: ["sh", "-c"]
+          args: ["echo filling ephemeral storage; dd if=/dev/zero of=/data/fill bs=1M count=80; sleep 3600"]
+          resources:
+            limits: { ephemeral-storage: 10Mi, memory: 32Mi }
+            requests: { ephemeral-storage: 10Mi }
+          volumeMounts: [{ name: scratch, mountPath: /data }]
+      volumes:
+        - name: scratch
+          emptyDir: { sizeLimit: 10Mi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: pgsql, namespace: payments }
+spec:
+  serviceName: pgsql
+  replicas: 1
+  selector: { matchLabels: { app: pgsql } }
+  template:
+    metadata: { labels: { app: pgsql } }
+    spec:
+      containers:
+        - name: db
+          image: busybox:1.36
+          command: ["sh", "-c", "sleep 3600"]
+          volumeMounts: [{ name: data, mountPath: /var/lib/pgsql }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: does-not-exist        # → PVC never binds, pod-0 stuck Pending
+        resources: { requests: { storage: 1Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: scaleme, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: scaleme } }
+  template:
+    metadata: { labels: { app: scaleme } }
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.25-alpine
+          resources: { requests: { cpu: 50m } }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: scaleme, namespace: payments }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: scaleme }
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+  # kind has NO metrics-server → HPA can't get metrics → ScalingActive=False
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: locked, namespace: payments }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: locked } }
+  template:
+    metadata: { labels: { app: locked } }
+    spec:
+      containers: [{ name: app, image: nginx:1.25-alpine }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: locked, namespace: payments }
+spec:
+  minAvailable: 1                  # == replicas → disruptionsAllowed=0 → drains/upgrades hang
+  selector: { matchLabels: { app: locked } }

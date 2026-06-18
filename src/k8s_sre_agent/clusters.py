@@ -56,6 +56,18 @@ class ClusterClients:
 
         return client.BatchV1Api(self.api_client)
 
+    @property
+    def autoscaling_v2(self):
+        from kubernetes import client
+
+        return client.AutoscalingV2Api(self.api_client)
+
+    @property
+    def policy_v1(self):
+        from kubernetes import client
+
+        return client.PolicyV1Api(self.api_client)
+
 
 class ClusterManager:
     def __init__(self) -> None:

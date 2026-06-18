@@ -97,6 +97,11 @@ SCENARIOS = {
     # third wave (tests/fixtures/scenarios3.yaml)
     "initfail": {"Init Container Failure"},
     "readinessfail": {"Readiness Probe Failure"},
+    # fourth wave (tests/fixtures/scenarios4.yaml)
+    "ephemeral": {"Pod Evicted: Ephemeral Storage", "Pod Evicted"},
+    "pgsql": {"Pending Pods (PVC)"},          # StatefulSet subject resolution
+    "scaleme": {"HPA Cannot Scale"},
+    "locked": {"PodDisruptionBudget Blocking"},
 }
 
 

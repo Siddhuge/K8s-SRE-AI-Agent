@@ -206,6 +206,42 @@ def test_job_failure_detected():
     assert any("orders" in e.summary for e in top.evidence)
 
 
+def test_ephemeral_storage_eviction():
+    ctx = {
+        "describe": {"containers": [], "init_containers": []},
+        "pods": [{"phase": "Failed", "reason": "Evicted",
+                  "message": 'Usage of EmptyDir volume "scratch" exceeds the limit "10Mi".'}],
+        "events": [], "logs": [], "previous_logs": [],
+    }
+    top = evaluate(ctx)[0]
+    assert top.issue == "Pod Evicted: Ephemeral Storage"
+    assert top.confidence >= 85
+
+
+def test_hpa_cannot_scale():
+    ctx = {
+        "describe": {"containers": [], "init_containers": []}, "pods": [], "events": [],
+        "logs": [], "previous_logs": [],
+        "hpas": [{"name": "scaleme", "target": "scaleme",
+                  "conditions": [{"type": "ScalingActive", "status": "False",
+                                  "reason": "FailedGetResourceMetric", "message": "no metrics"}]}],
+    }
+    top = evaluate(ctx)[0]
+    assert top.issue == "HPA Cannot Scale"
+    assert "FailedGetResourceMetric" in top.root_cause
+
+
+def test_pdb_blocking():
+    ctx = {
+        "describe": {"containers": [], "init_containers": []}, "pods": [], "events": [],
+        "logs": [], "previous_logs": [],
+        "pdbs": [{"name": "locked", "disruptions_allowed": 0, "current_healthy": 1, "desired_healthy": 1}],
+    }
+    top = evaluate(ctx)[0]
+    assert top.issue == "PodDisruptionBudget Blocking"
+    assert "0 voluntary disruptions" in top.root_cause
+
+
 def test_no_signature_returns_empty():
     ctx = {"describe": {"containers": []}, "pods": [{"phase": "Running"}], "events": [], "logs": [], "previous_logs": []}
     assert evaluate(ctx) == []

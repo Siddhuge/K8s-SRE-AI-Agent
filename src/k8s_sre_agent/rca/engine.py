@@ -36,6 +36,9 @@ _SEVERITY_BY_ISSUE = {
     "CrashLoopBackOff": Severity.high,
     "Init Container Failure": Severity.high,
     "Job Failed": Severity.medium,
+    "Pod Evicted: Ephemeral Storage": Severity.high,
+    "HPA Cannot Scale": Severity.medium,
+    "PodDisruptionBudget Blocking": Severity.medium,
     "OOMKilled": Severity.high,
     "ImagePullBackOff": Severity.medium,
     "ErrImagePull": Severity.medium,
@@ -74,35 +77,52 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
 
     ctx: dict = {"cluster": mgr.resolve(cluster).name, "namespace": namespace, "subject": subject}
 
-    # Resolve subject → concrete pod(s): a pod, a Deployment, or a Job.
+    # Resolve subject → concrete pod(s): a pod, a Deployment, a StatefulSet, or a Job.
     pod_names: list[str] = []
-    resolved = False
-    try:
+    selector_labels: dict = {}
+
+    def _pods_for(labels: dict) -> list[str]:
+        sel = ",".join(f"{k}={v}" for k, v in labels.items())
+        return [p.metadata.name for p in core.list_namespaced_pod(namespace, label_selector=sel).items]
+
+    def _try(fn) -> bool:
+        try:
+            fn()
+            return True
+        except Exception:
+            return False
+
+    def _pod():
+        nonlocal pod_names
         core.read_namespaced_pod(subject, namespace)
         pod_names = [subject]
-        resolved = True
-    except Exception:
-        try:
-            dep = apps.read_namespaced_deployment(subject, namespace)
-            sel = ",".join(f"{k}={v}" for k, v in (dep.spec.selector.match_labels or {}).items())
-            pod_names = [p.metadata.name for p in core.list_namespaced_pod(namespace, label_selector=sel).items]
-            resolved = True
-        except Exception:
-            try:  # a Job — pods are labelled with the job name
-                job = mgr.clients(cluster).batch_v1.read_namespaced_job(subject, namespace)
-                ctx["job"] = {
-                    "name": subject,
-                    "failed": job.status.failed or 0,
-                    "succeeded": job.status.succeeded or 0,
-                    "conditions": [{"type": c.type, "reason": c.reason, "message": c.message}
-                                   for c in (job.status.conditions or [])],
-                }
-                pods = core.list_namespaced_pod(namespace, label_selector=f"job-name={subject}")
-                pod_names = [p.metadata.name for p in pods.items]
-                resolved = True
-            except Exception as exc:  # noqa: BLE001
-                log.warning("could not resolve subject", extra={"subject": subject, "err": str(exc)})
+
+    def _deploy():
+        nonlocal pod_names, selector_labels
+        selector_labels = apps.read_namespaced_deployment(subject, namespace).spec.selector.match_labels or {}
+        pod_names = _pods_for(selector_labels)
+
+    def _sts():
+        nonlocal pod_names, selector_labels
+        selector_labels = apps.read_namespaced_stateful_set(subject, namespace).spec.selector.match_labels or {}
+        pod_names = _pods_for(selector_labels)
+
+    def _job():
+        nonlocal pod_names
+        job = mgr.clients(cluster).batch_v1.read_namespaced_job(subject, namespace)
+        ctx["job"] = {
+            "name": subject, "failed": job.status.failed or 0, "succeeded": job.status.succeeded or 0,
+            "conditions": [{"type": c.type, "reason": c.reason, "message": c.message}
+                           for c in (job.status.conditions or [])],
+        }
+        pod_names = [p.metadata.name for p in
+                     core.list_namespaced_pod(namespace, label_selector=f"job-name={subject}").items]
+
+    resolved = _try(_pod) or _try(_deploy) or _try(_sts) or _try(_job)
+    if not resolved:
+        log.warning("could not resolve subject", extra={"subject": subject})
     ctx["resolved"] = resolved
+    ctx["selector_labels"] = selector_labels
 
     # Pods overview (status/restarts/reasons). If the subject resolved, scope strictly
     # to its pods; if it did NOT resolve, do NOT fall back to all namespace pods — that
@@ -114,6 +134,7 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
             "phase": p.status.phase,
             "reason": next((c.state.waiting.reason for c in (p.status.container_statuses or [])
                             if c.state and c.state.waiting), p.status.reason),
+            "message": p.status.message,   # e.g. eviction reason ("...exceeds the limit...")
             "last_terminated": next((c.last_state.terminated.reason for c in (p.status.container_statuses or [])
                                      if c.last_state and c.last_state.terminated), None),
             # init container failure signals (the engine used to ignore these entirely)
@@ -136,18 +157,43 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
     # Fan out the independent reads concurrently. The kubernetes client is blocking
     # but releases the GIL during I/O, so on a remote cluster (50-150ms/round-trip)
     # this collapses ~6 serial calls into roughly one round-trip of wall time.
-    with ThreadPoolExecutor(max_workers=7) as ex:
+    clients = mgr.clients(cluster)
+    with ThreadPoolExecutor(max_workers=9) as ex:
         futures = {
             "events": ex.submit(core.list_namespaced_event, namespace),
             "nodes": ex.submit(core.list_node),
             "secrets": ex.submit(_secret_changes, core, namespace),
             "services": ex.submit(core.list_namespaced_service, namespace),
+            "hpas": ex.submit(clients.autoscaling_v2.list_namespaced_horizontal_pod_autoscaler, namespace),
+            "pdbs": ex.submit(clients.policy_v1.list_namespaced_pod_disruption_budget, namespace),
         }
         if target_pod:
             futures["describe"] = ex.submit(kubernetes_describe, core, namespace, target_pod)
             futures["logs"] = ex.submit(_read_logs, core, namespace, target_pod, False)
             futures["previous_logs"] = ex.submit(_read_logs, core, namespace, target_pod, True)
         results = {k: f.result() for k, f in futures.items()}
+
+    # HPAs targeting the subject + PDBs selecting the subject's pods (scoped, not all).
+    ctx["hpas"] = [
+        {
+            "name": h.metadata.name,
+            "target": h.spec.scale_target_ref.name,
+            "conditions": [{"type": c.type, "status": c.status, "reason": c.reason, "message": c.message}
+                           for c in (h.status.conditions or [])],
+        }
+        for h in results["hpas"].items
+        if h.spec.scale_target_ref.name == subject
+    ]
+    ctx["pdbs"] = [
+        {
+            "name": p.metadata.name,
+            "disruptions_allowed": p.status.disruptions_allowed,
+            "current_healthy": p.status.current_healthy,
+            "desired_healthy": p.status.desired_healthy,
+        }
+        for p in results["pdbs"].items
+        if selector_labels and (p.spec.selector.match_labels or {}).items() <= selector_labels.items()
+    ]
 
     if target_pod:
         ctx["describe"] = results["describe"]

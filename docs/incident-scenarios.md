@@ -15,6 +15,8 @@ the detector that fires. Detectors are in
 | **Pending Pods** | `FailedScheduling` event | `k8s_get_events`, `k8s_get_nodes` | `pending_unschedulable` → insufficient cpu/mem, taint, affinity, or PVC binding |
 | **OOMKilled** | last-terminated reason; memory trend | `k8s_describe_pod`, `metric_memory` | `oom_killed` → exceeded memory limit (leak or under-sized limit) |
 | **Container restart loop** | restart counts over time | `metric_restarts`, `logs_pod previous=true` | feeds CrashLoop / probe detectors |
+| **Init container failure** | `Init:CrashLoopBackOff`/`Init:Error`; init-container logs | `rca_diagnose` (`init_container_failure`) | failing init step (migration/config fetch) — pod never starts app containers |
+| **Pod evicted (ephemeral storage)** | pod `Failed` / `Evicted` + message | `rca_diagnose` (`storage_eviction`) | container/emptyDir disk over the ephemeral-storage limit |
 | **Liveness probe failure** | `Unhealthy` events (liveness) | `k8s_get_events`, `k8s_describe_pod` | `probe_failure` → failing liveness → restarts; check path/port/initialDelay |
 | **Readiness probe failure** | `Unhealthy` events (readiness) | `k8s_get_events` | `probe_failure` → never Ready → removed from Service endpoints |
 
@@ -49,7 +51,9 @@ the detector that fires. Detectors are in
 | **Service mesh / Istio — sidecar** | `istio-proxy` not Ready (proxy OOM, image pull, istiod unreachable) | `rca_diagnose` (`istio_sidecar_not_ready` detector) | pod can't serve mesh traffic even if the app is healthy |
 | **Service mesh / Istio — ingress Gateway** | Gateway with no VirtualService bound, or VS binding to a non-existent Gateway | `istio_mesh_analyze` | edge route never programmed → 404 at the ingress gateway |
 | **Load balancer** | LB ingress empty; cloud LB events | `k8s_get_services`, `k8s_get_events` | service type=LoadBalancer status |
-| **Storage / PVC** | Pending (PVC); volume node-affinity conflict | `k8s_get_events`, `k8s_get_nodes` | `pending_unschedulable` (PVC branch) |
+| **Storage / PVC** | Pending (PVC); volume node-affinity conflict | `k8s_get_events`, `k8s_get_nodes` | `pending_unschedulable` (PVC branch); also StatefulSet subjects |
+| **HPA can't scale** | HPA `ScalingActive=False` (FailedGetResourceMetric) | `rca_diagnose` (`hpa_cannot_scale`) | metrics-server missing or target has no resource requests |
+| **PDB blocking** | PDB `disruptionsAllowed=0` | `rca_diagnose` (`pdb_blocking`) | drains/upgrades/rollouts hang — too-tight minAvailable vs replicas |
 
 ## The change-correlation thread that runs through all of them
 

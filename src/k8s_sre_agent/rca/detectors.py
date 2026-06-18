@@ -372,6 +372,75 @@ def pending_unschedulable(ctx: dict) -> Hypothesis | None:
     return h
 
 
+@detector
+def storage_eviction(ctx: dict) -> Hypothesis | None:
+    """A pod evicted by kubelet — distinguish ephemeral-storage overage from generic
+    node-pressure eviction using the eviction message."""
+    evicted = [p for p in ctx.get("pods", []) if p.get("reason") == "Evicted"]
+    if not evicted:
+        return None
+    msg = " ".join((p.get("message") or "") for p in evicted).lower()
+    ephemeral = any(k in msg for k in ("ephemeral", "emptydir", "exceeds the limit", "local storage"))
+    h = Hypothesis(
+        issue="Pod Evicted: Ephemeral Storage" if ephemeral else "Pod Evicted",
+        confidence=88 if ephemeral else 80,
+        root_cause=(
+            "Pod was evicted by kubelet for exceeding its ephemeral-storage limit "
+            "(container writable layer / emptyDir disk usage over the limit)."
+            if ephemeral else
+            "Pod was evicted by kubelet under node resource pressure."
+        ),
+        suggested_fix=(
+            "Raise the ephemeral-storage limit, write less to local disk/emptyDir, or use a "
+            "PersistentVolume for large data."
+            if ephemeral else
+            "Investigate node disk/memory pressure driving evictions."
+        ),
+    )
+    h.evidence.append(Evidence(source="k8s", summary=f"Evicted: {(evicted[0].get('message') or '')[:160]}", weight=0.6))
+    return h
+
+
+# ── Scaling / disruption (HPA, PDB) ───────────────────────────────────────────
+
+@detector
+def hpa_cannot_scale(ctx: dict) -> Hypothesis | None:
+    for h in ctx.get("hpas", []):
+        bad = next((c for c in h["conditions"]
+                    if c["type"] in ("ScalingActive", "AbleToScale") and c["status"] == "False"), None)
+        if not bad:
+            continue
+        hy = Hypothesis(
+            issue="HPA Cannot Scale",
+            confidence=85,
+            root_cause=f"HorizontalPodAutoscaler '{h['name']}' cannot scale: {bad['reason']} — {(bad.get('message') or '')[:120]}",
+            suggested_fix="Install/repair metrics-server and ensure the target's containers declare resource requests so the HPA can compute utilization.",
+        )
+        hy.evidence.append(Evidence(source="k8s", summary=f"HPA {h['name']}: {bad['type']}=False ({bad['reason']})", weight=0.7))
+        return hy
+    return None
+
+
+@detector
+def pdb_blocking(ctx: dict) -> Hypothesis | None:
+    blocking = [p for p in ctx.get("pdbs", []) if (p.get("disruptions_allowed") or 0) == 0]
+    if not blocking:
+        return None
+    p = blocking[0]
+    h = Hypothesis(
+        issue="PodDisruptionBudget Blocking",
+        confidence=80,
+        root_cause=(
+            f"PodDisruptionBudget '{p['name']}' allows 0 voluntary disruptions "
+            f"(healthy {p.get('current_healthy')}, required {p.get('desired_healthy')}) — node drains, "
+            "upgrades and rollouts will block indefinitely."
+        ),
+        suggested_fix="Add replicas, or relax the PDB (lower minAvailable / raise maxUnavailable) so ≥1 disruption is allowed.",
+    )
+    h.evidence.append(Evidence(source="k8s", summary=f"PDB {p['name']}: disruptionsAllowed=0", weight=0.6))
+    return h
+
+
 # ── Node issues ─────────────────────────────────────────────────────────────
 
 @detector
