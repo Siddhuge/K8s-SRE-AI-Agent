@@ -73,7 +73,13 @@ go to stderr (tool, cluster, outcome, duration, principal).
 ## Routine ops
 
 * **Scale**: `replicaCount` + HPA (`autoscaling.enabled`). Reads are cheap; a single
-  process does ~400–600 req/s, scale horizontally for more.
+  process does ~400–600 req/s, scale horizontally for more. Validated at 3 replicas
+  (3/3 Ready, stable under soak). Set `replicaCount > 1` **at install** so the chart
+  creates the PodDisruptionBudget (minAvailable 1) for safe node drains.
+  > ⚠️ **Rate limiting is per-replica** (in-memory token bucket). With N replicas a
+  > principal's effective limit is N× the configured value, since the Service
+  > load-balances across them. For a strict global limit, back the limiter with Redis
+  > (same token-bucket math — see `ratelimit.py`) or enforce limits at the ingress.
 * **Rotate cluster creds**: federated (Workload Identity / IRSA) tokens auto-refresh;
   for `kubeconfig` mode, rotate the mounted file. No agent restart needed for federated.
 * **Upgrade**: bump image tag via Helm; the chart has a PDB + rolling update.

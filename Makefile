@@ -27,6 +27,12 @@ kind-up:
 kind-down:
 	kind delete cluster --name sre-demo
 
+stack-up: ## full validated env: kind + scenarios + Prometheus/Loki/Grafana + Istio + ArgoCD
+	./scripts/setup-stack.sh
+
+stack-down: ## delete the kind cluster + port-forwards
+	./scripts/teardown.sh
+
 demo: ## run an RCA against the kind demo workload
 	PYTHONPATH=src CLUSTERS_CONFIG=config/clusters.yaml python3 -c \
 		"from k8s_sre_agent.rca.engine import diagnose; print(diagnose('kind-sre-demo','payments','api').to_markdown())"
