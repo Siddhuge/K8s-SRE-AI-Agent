@@ -100,11 +100,9 @@ def build_kube_config(cluster: ClusterConfig):
     cfg.host = cluster.auth.server
 
     if mode == "azure_workload":
-        cfg.api_key = {"authorization": _azure_workload_token(cluster)}
-        cfg.api_key_prefix = {"authorization": "Bearer"}
+        token = _azure_workload_token(cluster)
     elif mode == "aws_eks":
-        cfg.api_key = {"authorization": _eks_token(cluster)}
-        cfg.api_key_prefix = {"authorization": "Bearer"}
+        token = _eks_token(cluster)
     elif mode == "oidc_exec":
         # The exec plugin is configured in kubeconfig; defer to it.
         kconfig.load_kube_config(context=cluster.auth.context or None)
@@ -114,7 +112,13 @@ def build_kube_config(cluster: ClusterConfig):
 
     # CA bundle is mounted per-cluster at a well-known path in production.
     cfg.ssl_ca_cert = f"/etc/k8s-sre-agent/ca/{cluster.name}.crt"
-    return client.ApiClient(cfg)
+    api_client = client.ApiClient(cfg)
+    # Set the bearer header DIRECTLY. The Configuration.api_key/api_key_prefix path is
+    # keyed by the OpenAPI security-scheme name ("BearerToken"), not "authorization",
+    # so api_key={"authorization": ...} silently sends NO auth header → 401. Verified
+    # live against AKS Workload Identity: the same token via set_default_header works.
+    api_client.set_default_header("Authorization", f"Bearer {token}")
+    return api_client
 
 
 def _azure_workload_token(cluster: ClusterConfig) -> str:
