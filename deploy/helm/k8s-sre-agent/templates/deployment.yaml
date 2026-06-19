@@ -71,6 +71,13 @@ spec:
               mountPath: /app/config
               readOnly: true
             {{- end }}
+            {{- if .Values.clusterCAs.enabled }}
+            # Per-cluster API-server CA bundles for azure_workload / aws_eks remote
+            # clusters (build_kube_config loads /etc/k8s-sre-agent/ca/<cluster>.crt).
+            - name: cluster-cas
+              mountPath: /etc/k8s-sre-agent/ca
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -78,4 +85,9 @@ spec:
         - name: clusters
           configMap:
             name: {{ include "agent.name" . }}-clusters
+        {{- end }}
+        {{- if .Values.clusterCAs.enabled }}
+        - name: cluster-cas
+          secret:
+            secretName: {{ .Values.clusterCAs.secretName }}   # keys: <cluster-name>.crt
         {{- end }}

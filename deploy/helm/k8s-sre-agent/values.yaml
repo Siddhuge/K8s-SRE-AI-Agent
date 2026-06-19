@@ -67,6 +67,17 @@ rag:
 # if empty.
 clustersConfig: ""
 
+# Per-cluster API-server CA bundles for REMOTE clusters reached via azure_workload
+# (AKS Workload Identity) or aws_eks (IRSA). The agent loads each cluster's CA from
+# /etc/k8s-sre-agent/ca/<cluster-name>.crt (TLS verification — required, not optional).
+# Create the Secret with one key per cluster, e.g.:
+#   kubectl create secret generic k8s-sre-agent-cluster-cas \
+#     --from-file=aks-prod.crt=./aks-prod-ca.crt --from-file=eks-prod.crt=./eks-prod-ca.crt
+# Not needed for in_cluster / kubeconfig modes.
+clusterCAs:
+  enabled: false
+  secretName: k8s-sre-agent-cluster-cas
+
 # Restrict egress to only the backends the agent needs.
 networkPolicy:
   enabled: true

@@ -82,6 +82,10 @@ go to stderr (tool, cluster, outcome, duration, principal).
   > (same token-bucket math — see `ratelimit.py`) or enforce limits at the ingress.
 * **Rotate cluster creds**: federated (Workload Identity / IRSA) tokens auto-refresh;
   for `kubeconfig` mode, rotate the mounted file. No agent restart needed for federated.
+* **Remote-cluster CA bundles**: for `azure_workload` (AKS) / `aws_eks` clusters the agent
+  verifies TLS against `/etc/k8s-sre-agent/ca/<cluster>.crt`. Provide them via a Secret and
+  `--set clusterCAs.enabled=true` (see `values.yaml`). On AKS, Azure RBAC role assignments
+  take a few minutes to propagate — early calls may 401 until they do.
 * **Upgrade**: bump image tag via Helm; the chart has a PDB + rolling update.
 * **Cost**: tiered model routing (Haiku→Sonnet→Opus) + prompt caching — see
   [cost-optimization.md](cost-optimization.md).
