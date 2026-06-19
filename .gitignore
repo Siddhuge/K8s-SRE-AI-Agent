@@ -7,3 +7,10 @@ venv/
 .env
 config/clusters.yaml
 /etc/k8s-sre-agent/
+
+# Terraform — state can contain secrets (kubeconfig); never commit it
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+terraform/terraform.tfvars

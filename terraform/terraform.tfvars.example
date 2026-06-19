@@ -1,0 +1,7 @@
+# Copy to terraform.tfvars and adjust. All have sensible defaults; override as needed.
+location     = "eastus"
+prefix       = "k8ssre"
+node_count   = 1
+node_vm_size = "Standard_B2s"
+# kubernetes_version = "1.30"   # omit to use the region default
+# create_acr = true
