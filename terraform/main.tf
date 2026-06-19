@@ -40,8 +40,11 @@ resource "azurerm_kubernetes_cluster" "this" {
   # Entra-integrated cluster with Azure RBAC for Kubernetes — required for the agent's
   # AAD token to authorize against the kube API. Read-only is granted below via a role
   # assignment. (local accounts stay enabled so you can `get-credentials --admin` to deploy.)
+  # managed = true selects MANAGED AAD (required for Azure RBAC). It shows a deprecation
+  # warning on azurerm 3.x but is functionally required — without it the provider treats
+  # this as legacy AAD and demands server_app_id/client_app_id/server_app_secret.
   azure_active_directory_role_based_access_control {
-    tenant_id          = data.azurerm_client_config.current.tenant_id
+    managed            = true
     azure_rbac_enabled = true
   }
 
