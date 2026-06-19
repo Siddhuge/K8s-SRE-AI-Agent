@@ -20,6 +20,9 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+from kubernetes.client.rest import ApiException
 
 from ..clusters import manager
 from ..config import get_settings
@@ -171,7 +174,29 @@ def collect_context(cluster: str | None, namespace: str, subject: str) -> dict:
             futures["describe"] = ex.submit(kubernetes_describe, core, namespace, target_pod)
             futures["logs"] = ex.submit(_read_logs, core, namespace, target_pod, False)
             futures["previous_logs"] = ex.submit(_read_logs, core, namespace, target_pod, True)
-        results = {k: f.result() for k, f in futures.items()}
+        # Resolve each read independently. A least-privilege identity may be DENIED a
+        # specific read (e.g. Azure RBAC "Reader" grants no cluster-scoped nodes and no
+        # secrets) — degrade that one signal instead of aborting the whole diagnosis.
+        _empty = SimpleNamespace(items=[])
+        _defaults: dict = {
+            "events": _empty, "nodes": _empty, "services": _empty,
+            "hpas": _empty, "pdbs": _empty, "secrets": [],
+            "describe": {}, "logs": "", "previous_logs": "",
+        }
+        results = {}
+        degraded: list[str] = []
+        for k, f in futures.items():
+            try:
+                results[k] = f.result()
+            except ApiException as e:
+                log.warning("rca: read %r unavailable (HTTP %s) — continuing without it", k, e.status)
+                results[k] = _defaults[k]
+                degraded.append(k)
+            except Exception as e:  # noqa: BLE001 — one failed read must never kill the RCA
+                log.warning("rca: read %r failed (%s) — continuing without it", k, e)
+                results[k] = _defaults[k]
+                degraded.append(k)
+    ctx["degraded_reads"] = degraded
 
     # HPAs targeting the subject + PDBs selecting the subject's pods (scoped, not all).
     ctx["hpas"] = [
@@ -317,6 +342,18 @@ def _read_logs(core, namespace: str, pod: str, previous: bool, tail: int = 120, 
         return []
 
 
+def _degraded_evidence(ctx: dict) -> list[Evidence]:
+    """Note any reads that were denied/unavailable, so the RCA is honest about its inputs."""
+    d = ctx.get("degraded_reads") or []
+    if not d:
+        return []
+    return [Evidence(
+        source="k8s", weight=0.0,
+        summary=(f"Partial inputs — reads unavailable for: {', '.join(d)} "
+                 "(least-privilege identity). Analysis proceeded without them."),
+    )]
+
+
 def diagnose(cluster: str | None, namespace: str, subject: str) -> RCAReport:
     ctx = collect_context(cluster, namespace, subject)
     hypotheses = evaluate(ctx)
@@ -327,13 +364,15 @@ def diagnose(cluster: str | None, namespace: str, subject: str) -> RCAReport:
             issue="No known failure signature detected",
             root_cause="Automated detectors found no matching signature. Inspect logs/metrics manually or widen the window.",
             confidence=20,
-            evidence=[Evidence(source="k8s", summary="No CrashLoop/ImagePull/OOM/probe/node-pressure signatures matched")],
+            evidence=[Evidence(source="k8s", summary="No CrashLoop/ImagePull/OOM/probe/node-pressure signatures matched")]
+            + _degraded_evidence(ctx),
             suggested_fix="Use logs_pod / prom_query / loki_query to investigate directly.",
             rollback_required=False,
             timeline=correlate.build_timeline(ctx),
         )
 
     top = hypotheses[0]
+    top.evidence += _degraded_evidence(ctx)
 
     # Optional RAG runbook match.
     if get_settings().rag_enabled:
