@@ -49,7 +49,10 @@ CREATE INDEX IF NOT EXISTS chunks_tsv_idx ON chunks USING gin (tsv);
 CREATE INDEX IF NOT EXISTS chunks_tenant_idx ON chunks (tenant);
 
 -- Row-Level Security: queries must set app.tenants; chunks outside it are invisible.
+-- FORCE is required — without it the table OWNER (the role that created these tables)
+-- bypasses RLS entirely, so the tenant isolation would be silently ineffective.
 ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chunks FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS chunks_tenant_isolation ON chunks;
 CREATE POLICY chunks_tenant_isolation ON chunks
   USING (tenant = ANY (string_to_array(current_setting('app.tenants', true), ',')));
@@ -60,7 +63,7 @@ WITH vec AS (
   SELECT c.id, c.document_id, c.content,
          1 - (c.embedding <=> %(qvec)s::vector) AS vscore
   FROM chunks c
-  WHERE (%(service)s IS NULL OR c.service = %(service)s)
+  WHERE (%(service)s::text IS NULL OR c.service = %(service)s::text)
   ORDER BY c.embedding <=> %(qvec)s::vector
   LIMIT 40
 ),
@@ -109,7 +112,8 @@ def upsert_chunks(document: dict, chunks: list[str], vectors: list[list[float]])
 def search(qvec: list[float], qtext: str, tenants: list[str], service: str | None, top_k: int) -> list[dict]:
     with _connect() as conn, conn.cursor() as cur:
         # Scope this session to the caller's tenants (drives the RLS policy).
-        cur.execute("SET app.tenants = %s", (",".join(tenants),))
+        # Postgres SET can't take a bind param; set_config() can (session-level).
+        cur.execute("SELECT set_config('app.tenants', %s, false)", (",".join(tenants),))
         cur.execute(HYBRID_SEARCH, {"qvec": qvec, "qtext": qtext, "service": service, "top_k": top_k})
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]

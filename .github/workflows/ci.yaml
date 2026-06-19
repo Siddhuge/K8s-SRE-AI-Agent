@@ -23,6 +23,35 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}   # authenticated → avoids shared-runner rate limits
         run: pytest tests/test_integration_github.py -v
 
+  rag:
+    runs-on: ubuntu-latest
+    services:
+      pgvector:
+        image: pgvector/pgvector:pg16
+        env: { POSTGRES_USER: sre_agent, POSTGRES_PASSWORD: devpass, POSTGRES_DB: sre_kb }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sre_agent" --health-interval 5s
+          --health-timeout 5s --health-retries 15
+    env:
+      PGVECTOR_DSN: postgresql://sre_agent:devpass@localhost:5432/sre_kb
+      PGVECTOR_RO_DSN: postgresql://sre_ro:ropass@localhost:5432/sre_kb
+      EMBEDDING_MODEL: "local:BAAI/bge-small-en-v1.5"
+      EMBEDDING_DIM: "384"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -e ".[dev,rag,rag-local]"
+      - name: Non-superuser read role + default SELECT (so RLS actually applies)
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=devpass psql -h localhost -U sre_agent -d sre_kb -c \
+            "CREATE ROLE sre_ro LOGIN PASSWORD 'ropass'; GRANT USAGE ON SCHEMA public TO sre_ro; \
+             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO sre_ro;"
+      - name: RAG pipeline tests (ingest → embed → store → hybrid retrieve → RLS)
+        run: pytest tests/test_rag_unit.py tests/test_integration_rag.py -v
+
   integration:
     runs-on: ubuntu-latest
     steps:

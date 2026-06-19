@@ -30,7 +30,10 @@ dependencies = [
 rag = [
   "psycopg[binary]>=3.1",    # PostgreSQL + pgvector
   "pgvector>=0.2.5",
-  "anthropic>=0.39.0",       # embeddings via Voyage / fallback; client for self-test
+  "voyageai>=0.2",           # default embedding backend
+]
+rag-local = [
+  "fastembed>=0.3",          # CPU/ONNX embeddings, no API key (EMBEDDING_MODEL=local:...)
 ]
 azure = ["azure-identity>=1.16"]          # Entra ID / Workload Identity
 aws = ["boto3>=1.34"]                      # EKS token / IRSA

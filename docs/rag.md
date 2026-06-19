@@ -76,8 +76,19 @@ CREATE POLICY chunks_tenant_isolation ON chunks
   USING (tenant = ANY (string_to_array(current_setting('app.tenants', true), ',')));
 ```
 
+> ⚠️ **RLS only applies to a non-superuser, least-privilege role.** PostgreSQL
+> **superusers and table owners bypass RLS** — a superuser connection returns rows
+> from *every* tenant even with the policy in place (verified live; it's why
+> `test_rls_tenant_isolation` connects as a dedicated read role). Two requirements,
+> both shipped in the schema/guidance:
+> 1. The agent must connect as a **non-superuser** role that does **not own** the tables
+>    (own them with a separate migration/admin role).
+> 2. The schema sets `ALTER TABLE chunks FORCE ROW LEVEL SECURITY` so the policy also
+>    binds the owner, as defense in depth.
+
 Other controls:
-* The agent connects with a **least-privilege DB role** (`SELECT`/`INSERT` on KB tables only).
+* The agent connects with a **least-privilege DB role** (`SELECT`/`INSERT` on KB tables only) —
+  this is **load-bearing** for tenant isolation, not just hygiene (see warning above).
 * Postmortems often contain sensitive detail; ingestion can redact PII and the `severity`/
   `tenant` tags gate who ever retrieves them.
 * Secrets are never ingested; runbooks reference secret *names*, not values.

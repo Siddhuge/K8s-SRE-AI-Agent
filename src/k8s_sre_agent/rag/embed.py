@@ -39,25 +39,38 @@ def chunk_document(text: str, *, max_tokens: int = _MAX_TOKENS) -> list[str]:
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """Return one embedding vector per input text.
 
-    Implemented against Voyage (Anthropic's recommended embeddings). Replace the body
-    to point at whichever embedding endpoint your platform standardizes on; the rest
-    of the pipeline only depends on the returned vector dimension matching
+    Default backend is Voyage (Anthropic's recommended embeddings). Set
+    EMBEDDING_MODEL to a `local:<fastembed-model>` value (e.g. `local:BAAI/bge-small-en-v1.5`)
+    to use a CPU-only ONNX model with no API key — handy for dev/CI and air-gapped
+    installs. The rest of the pipeline only depends on the vector dimension matching
     EMBEDDING_DIM.
     """
-    settings = get_settings()
-    try:
-        import voyageai
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("voyageai not installed; `pip install voyageai` or swap embed_texts") from exc
-
-    client = voyageai.Client()
-    result = client.embed(texts, model=settings.embedding_model, input_type="document")
-    return result.embeddings
+    return _embed(texts, input_type="document")
 
 
 def embed_query(text: str) -> list[float]:
-    settings = get_settings()
-    import voyageai
+    return _embed([text], input_type="query")[0]
 
-    client = voyageai.Client()
-    return client.embed([text], model=settings.embedding_model, input_type="query").embeddings[0]
+
+_LOCAL_MODEL = None  # cached fastembed model
+
+
+def _embed(texts: list[str], *, input_type: str) -> list[list[float]]:
+    model = get_settings().embedding_model
+    if model.startswith("local:"):
+        return _local_embed(texts, model.split(":", 1)[1])
+    try:
+        import voyageai
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("voyageai not installed; set EMBEDDING_MODEL=local:<model> or pip install voyageai") from exc
+    return voyageai.Client().embed(texts, model=model, input_type=input_type).embeddings
+
+
+def _local_embed(texts: list[str], model_name: str) -> list[list[float]]:
+    """CPU-only ONNX embeddings via fastembed (no torch, no API key)."""
+    global _LOCAL_MODEL
+    from fastembed import TextEmbedding
+
+    if _LOCAL_MODEL is None:
+        _LOCAL_MODEL = TextEmbedding(model_name=model_name or "BAAI/bge-small-en-v1.5")
+    return [list(map(float, v)) for v in _LOCAL_MODEL.embed(texts)]
