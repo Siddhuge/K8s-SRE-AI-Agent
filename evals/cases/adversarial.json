@@ -1,0 +1,50 @@
+[
+  {
+    "name": "dns-beats-db-when-both-signals-present",
+    "description": "Ranking stress: a 'no such host' AND a generic connection error — DNS must win over a plain DB-down reading.",
+    "ctx": {
+      "describe": {"containers": [{"waiting_reason": "CrashLoopBackOff"}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "previous_logs": [
+        "WARN: retrying connection to payments-db",
+        "FATAL: dial tcp: lookup payments-db.invalid on 10.96.0.10:53: no such host"
+      ],
+      "logs": [], "events": []
+    },
+    "expected": {"issue": "DNS Resolution Failure", "min_confidence": 85}
+  },
+  {
+    "name": "oom-with-image-pull-noise-still-oom",
+    "description": "Ranking stress: an old ImagePull event lingers, but the container was OOMKilled — OOM (terminated state) must outrank a stale waiting-reason.",
+    "ctx": {
+      "describe": {"containers": [{"last_terminated_reason": "OOMKilled"}]},
+      "pods": [{"last_terminated": "OOMKilled"}],
+      "events": [{"reason": "Failed", "message": "Back-off pulling image earlier"}],
+      "logs": [], "previous_logs": [], "memory_trend_rising": true
+    },
+    "expected": {"issue": "OOMKilled", "min_confidence": 90}
+  },
+  {
+    "name": "pending-pvc-not-cpu",
+    "description": "Pending for an unbound PVC must not be misread as insufficient CPU.",
+    "ctx": {
+      "describe": {"containers": []},
+      "pods": [{"phase": "Pending"}],
+      "events": [{"reason": "FailedScheduling", "message": "0/3 nodes are available: 3 pod has unbound immediate PersistentVolumeClaims"}],
+      "logs": [], "previous_logs": []
+    },
+    "expected": {"issue": "Pending Pods (PVC)", "evidence_excludes": ["Insufficient cpu"]}
+  },
+  {
+    "name": "transient-restart-not-yet-a-signature",
+    "description": "NEGATIVE-ish: a single restart on a now-Running pod with healthy logs should not trigger a confident crashloop verdict.",
+    "ctx": {
+      "describe": {"containers": [{"restart_count": 1, "ready": true}]},
+      "pods": [{"phase": "Running", "reason": null}],
+      "events": [],
+      "logs": ["10.0.0.1 - - [GET /healthz HTTP/1.1] 200"],
+      "previous_logs": []
+    },
+    "expected": {"issue": null}
+  }
+]
