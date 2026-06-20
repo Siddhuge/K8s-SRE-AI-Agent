@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>K8s SRE Agent — Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">⎈</span>
+      <div>
+        <h1>K8s SRE Agent</h1>
+        <p class="sub">read-only incident dashboard <span class="v">v2</span></p>
+      </div>
+    </div>
+    <div class="header-right">
+      <span id="user" class="user"></span>
+      <div id="chat-badge" class="badge badge-muted">checking…</div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Left: clusters -->
+    <section id="clusters-pane">
+      <div class="pane-head">
+        <h2>Connected clusters</h2>
+        <button id="refresh" title="Refresh">↻</button>
+      </div>
+      <div id="clusters" class="clusters"></div>
+      <details id="tools-box" class="tools-box">
+        <summary>Available read-only tools</summary>
+        <ul id="tools"></ul>
+      </details>
+    </section>
+
+    <!-- Right: chat -->
+    <section id="chat-pane">
+      <div class="pane-head"><h2>Ask the agent</h2></div>
+      <div id="messages" class="messages">
+        <div class="msg agent">
+          <div class="bubble">Hi — ask me about your clusters, e.g. <em>"diagnose
+          payments/api in prod"</em> or <em>"what's crash-looping in checkout?"</em>
+          I can only read; I recommend fixes, I never run them.</div>
+        </div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" type="text" autocomplete="off"
+               placeholder="Ask about an incident…" />
+        <button id="send" type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- cluster drill-down overlay -->
+  <div id="detail" class="detail hidden">
+    <div class="detail-head">
+      <button id="detail-back" title="Back">←</button>
+      <h2 id="detail-title">cluster</h2>
+      <label class="ns-pick">namespace
+        <select id="detail-ns"></select>
+      </label>
+    </div>
+    <div id="detail-body" class="detail-body"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

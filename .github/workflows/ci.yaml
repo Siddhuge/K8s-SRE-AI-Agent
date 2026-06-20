@@ -13,7 +13,7 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e ".[dev,rag,azure,aws]"
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests webapp evals loadtest
       - name: Type check
         run: mypy src
       - name: Dependency CVE audit

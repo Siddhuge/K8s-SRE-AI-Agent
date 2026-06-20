@@ -38,6 +38,7 @@ rag-local = [
 azure = ["azure-identity>=1.16"]          # Entra ID / Workload Identity
 aws = ["boto3>=1.34"]                      # EKS token / IRSA
 redis = ["redis>=5.0"]                     # strict global rate limiting (RATELIMIT_REDIS_URL)
+web = ["anthropic>=0.40"]                   # v2 dashboard chat (webapp/) — Claude tool-use loop
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.9"]
 
 [project.scripts]
