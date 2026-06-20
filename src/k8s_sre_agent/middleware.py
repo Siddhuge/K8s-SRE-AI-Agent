@@ -18,7 +18,7 @@ import logging
 from .auth import AuthError, verify_bearer_token
 from .config import Settings
 from .observability import metrics_payload, record_auth, record_ratelimited
-from .ratelimit import TokenBucketLimiter
+from .ratelimit import build_limiter
 
 log = logging.getLogger("k8s_sre_agent.http")
 
@@ -32,7 +32,7 @@ def build_asgi_app(mcp, settings: Settings, *, readiness):
     from starlette.responses import JSONResponse, PlainTextResponse, Response
     from starlette.routing import Route
 
-    limiter = TokenBucketLimiter(rate=settings_rate(settings), burst=settings_burst(settings))
+    limiter = build_limiter(settings)  # in-memory, or Redis-backed if RATELIMIT_REDIS_URL set
 
     async def healthz(_req: Request) -> Response:
         return JSONResponse({"status": "ok"})

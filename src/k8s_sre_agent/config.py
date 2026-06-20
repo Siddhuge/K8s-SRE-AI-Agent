@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # Rate limiting (per authenticated principal).
     ratelimit_rate: float = 5.0
     ratelimit_burst: int = 30
+    # Empty → in-memory per-replica limiter. Set (e.g. redis://host:6379/0) for a strict
+    # GLOBAL limit shared across all gateway replicas.
+    ratelimit_redis_url: str = ""
 
     def allowed_slack_channels(self) -> set[str]:
         return {c.strip() for c in self.slack_allowed_channels.split(",") if c.strip()}

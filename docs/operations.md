@@ -84,10 +84,12 @@ go to stderr (tool, cluster, outcome, duration, principal).
   > and tune the HPA on **latency/concurrency**, not just CPU. (The true per-process
   > concurrency ceiling needs a load generator on a *separate* host to measure — the
   > bundled rig is co-located, so its highest-concurrency numbers understate the server.)
-  > ⚠️ **Rate limiting is per-replica** (in-memory token bucket). With N replicas a
-  > principal's effective limit is N× the configured value, since the Service
-  > load-balances across them. For a strict global limit, back the limiter with Redis
-  > (same token-bucket math — see `ratelimit.py`) or enforce limits at the ingress.
+  > ⚠️ **Rate limiting is per-replica by default** (in-memory token bucket). With N
+  > replicas a principal's effective limit is N× the configured value, since the Service
+  > load-balances across them. For a **strict global limit**, set `RATELIMIT_REDIS_URL`
+  > (e.g. `redis://redis:6379/0`) — the agent then uses a Redis-backed limiter with the
+  > same token-bucket math, atomic via a Lua script, shared across all replicas (install
+  > the `redis` extra). Empty = in-memory.
 * **Rotate cluster creds**: federated (Workload Identity / IRSA) tokens auto-refresh;
   for `kubeconfig` mode, rotate the mounted file. No agent restart needed for federated.
 * **Remote-cluster CA bundles**: for `azure_workload` (AKS) / `aws_eks` clusters the agent
