@@ -18,6 +18,8 @@ jobs:
         run: mypy src
       - name: Unit tests (no cluster)
         run: pytest tests -q -k "not integration"
+      - name: RCA evaluation harness (accuracy + calibration gate)
+        run: python3 evals/run_eval.py
       - name: GitHub API tools (live, no cluster)
         env:
           GITHUB_TOKEN: ${{ github.token }}   # authenticated → avoids shared-runner rate limits

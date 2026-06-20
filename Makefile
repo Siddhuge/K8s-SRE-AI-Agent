@@ -1,4 +1,4 @@
-.PHONY: install lint type test test-unit test-integration kind-up kind-down demo image helm-lint
+.PHONY: install lint type test test-unit test-integration eval kind-up kind-down demo image helm-lint
 
 install:
 	pip install -e ".[dev,rag,azure,aws]"
@@ -16,6 +16,9 @@ test-integration:
 	PYTHONPATH=src CLUSTERS_CONFIG=config/clusters.yaml pytest tests/test_integration_kind.py -v
 
 test: test-unit
+
+eval: ## score the RCA detector engine against the labeled dataset (CI-gated)
+	PYTHONPATH=src python3 evals/run_eval.py
 
 kind-up:
 	kind create cluster --name sre-demo --wait 90s

@@ -1,0 +1,220 @@
+[
+  {
+    "name": "crashloop-db-auth",
+    "description": "Auth failure in previous logs + a recent secret rotation → credentials, high confidence, no rollback.",
+    "ctx": {
+      "describe": {"containers": [{"waiting_reason": "CrashLoopBackOff"}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "previous_logs": ["FATAL: password authentication failed for user \"payments\""],
+      "logs": [],
+      "events": [],
+      "recent_change": {"kind": "secret", "name": "db-credentials", "at": "2026-06-13T10:00:00+00:00"}
+    },
+    "expected": {"issue": "CrashLoopBackOff", "root_cause_contains": ["credential"], "min_confidence": 90, "rollback_required": false}
+  },
+  {
+    "name": "crashloop-db-timeout-missing-dependency",
+    "description": "A connection TIMEOUT with no db Service is a missing dependency, NOT a secret rotation (false positive the model caught live).",
+    "ctx": {
+      "describe": {"containers": [{"waiting_reason": "CrashLoopBackOff"}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "previous_logs": ["FATAL: could not connect to server: Connection timed out (host=db.payments.svc port=5432)"],
+      "logs": [],
+      "events": [],
+      "recent_change": {"kind": "secret", "name": "db-credentials", "at": "2026-06-13T10:00:00+00:00"},
+      "services": []
+    },
+    "expected": {"issue": "CrashLoopBackOff (missing dependency)", "root_cause_contains": ["does not exist"], "evidence_excludes": ["secret"]}
+  },
+  {
+    "name": "image-pull-unauthorized",
+    "description": "ImagePullBackOff with 'unauthorized' in the event → registry auth.",
+    "ctx": {
+      "describe": {"containers": [{"waiting_reason": "ImagePullBackOff"}]},
+      "pods": [],
+      "events": [{"reason": "Failed", "message": "Error: ImagePullBackOff: pull access denied, unauthorized"}],
+      "logs": [],
+      "previous_logs": []
+    },
+    "expected": {"issue": "ImagePullBackOff", "root_cause_contains": ["auth"]}
+  },
+  {
+    "name": "oom-killed-rising-memory",
+    "description": "OOMKilled with a rising memory trend → very high confidence.",
+    "ctx": {
+      "describe": {"containers": [{"last_terminated_reason": "OOMKilled"}]},
+      "pods": [{"last_terminated": "OOMKilled"}],
+      "events": [], "logs": [], "previous_logs": [],
+      "memory_trend_rising": true
+    },
+    "expected": {"issue": "OOMKilled", "min_confidence": 95}
+  },
+  {
+    "name": "pending-insufficient-cpu",
+    "description": "FailedScheduling Insufficient cpu → Pending Pods.",
+    "ctx": {
+      "describe": {"containers": []},
+      "pods": [{"phase": "Pending"}],
+      "events": [{"reason": "FailedScheduling", "message": "0/5 nodes are available: 5 Insufficient cpu"}],
+      "logs": [], "previous_logs": []
+    },
+    "expected": {"issue": "Pending Pods", "root_cause_contains": ["cpu"]}
+  },
+  {
+    "name": "dns-resolution-failure",
+    "description": "'no such host' is DNS, must outrank a generic DB-down reading.",
+    "ctx": {
+      "describe": {"containers": [{"waiting_reason": "CrashLoopBackOff"}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "previous_logs": ["FATAL: dial tcp: lookup payments-db.invalid on 10.96.0.10:53: no such host"],
+      "logs": [], "events": []
+    },
+    "expected": {"issue": "DNS Resolution Failure", "min_confidence": 85}
+  },
+  {
+    "name": "tls-cert-expired",
+    "description": "Expired cert in the previous container's logs → TLS issue should be among the hypotheses.",
+    "ctx": {
+      "describe": {"containers": [{"waiting_reason": "CrashLoopBackOff"}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "logs": [],
+      "previous_logs": ["tls: failed to verify certificate: x509: certificate has expired"],
+      "events": []
+    },
+    "expected": {"issue": "TLS Certificate Issue", "match": "top3"}
+  },
+  {
+    "name": "liveness-probe-durable-fallback",
+    "description": "Restarting pod, liveness probe, normal access logs, expired events → probe failure INFERRED at moderate (not event-backed) confidence.",
+    "ctx": {
+      "describe": {"containers": [{"liveness": true, "readiness": false}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "events": [],
+      "logs": ["10.0.0.1 - - [GET / HTTP/1.1] 200"],
+      "previous_logs": []
+    },
+    "expected": {"issue": "Liveness Probe Failure", "min_confidence": 55, "max_confidence": 74}
+  },
+  {
+    "name": "app-error-is-not-probe-false-kill",
+    "description": "A real panic must NOT be mislabeled as a liveness probe false-kill.",
+    "ctx": {
+      "describe": {"containers": [{"liveness": true}]},
+      "pods": [{"reason": "CrashLoopBackOff"}],
+      "events": [],
+      "logs": ["panic: runtime error: nil pointer dereference"],
+      "previous_logs": []
+    },
+    "expected": {"forbid_issue": "Liveness Probe Failure"}
+  },
+  {
+    "name": "istio-sidecar-oom-outranks-generic-oom",
+    "description": "A proxy OOM is a sidecar problem, not a generic app OOM.",
+    "ctx": {
+      "describe": {"containers": [
+        {"name": "app", "ready": true},
+        {"name": "istio-proxy", "ready": false, "waiting_reason": "CrashLoopBackOff", "last_terminated_reason": "OOMKilled"}
+      ]},
+      "pods": [{"last_terminated": "OOMKilled"}],
+      "events": [], "logs": [], "previous_logs": []
+    },
+    "expected": {"issue": "Istio Sidecar Not Ready", "root_cause_contains": ["proxy"], "min_confidence": 90}
+  },
+  {
+    "name": "istio-sidecar-ready-no-finding",
+    "description": "A ready sidecar must not produce a sidecar finding.",
+    "ctx": {
+      "describe": {"containers": [
+        {"name": "app", "ready": true},
+        {"name": "istio-proxy", "ready": true}
+      ]},
+      "pods": [{"phase": "Running"}], "events": [], "logs": [], "previous_logs": []
+    },
+    "expected": {"forbid_issue": "Istio Sidecar Not Ready"}
+  },
+  {
+    "name": "crashloop-mid-restart-window",
+    "description": "Caught between restarts (no waiting reason) but 50 restarts + error exits → still a crashloop; DB timeout cited.",
+    "ctx": {
+      "describe": {"containers": [{"restart_count": 50, "last_terminated_reason": "Error", "ready": false}]},
+      "pods": [{"reason": null}],
+      "previous_logs": ["FATAL: could not connect to server: Connection timed out"],
+      "logs": [], "events": []
+    },
+    "expected": {"issue": "CrashLoopBackOff", "root_cause_contains": ["database"]}
+  },
+  {
+    "name": "init-container-failure-beats-pending",
+    "description": "A failing init container is an init problem, and must suppress the Pending reading.",
+    "ctx": {
+      "describe": {"init_containers": [
+        {"name": "init-migrate", "waiting_reason": "CrashLoopBackOff", "last_terminated_reason": "Error", "last_exit_code": 1}
+      ], "containers": []},
+      "pods": [{"phase": "Pending", "init_waiting": "CrashLoopBackOff"}],
+      "init_logs": ["ERROR: migration lock held by another process"],
+      "failing_init_container": "init-migrate",
+      "events": [], "logs": [], "previous_logs": []
+    },
+    "expected": {"issue": "Init Container Failure", "root_cause_contains": ["init-migrate"], "min_confidence": 85, "forbid_issue": "Pending Pods"}
+  },
+  {
+    "name": "job-backoff-limit-exceeded",
+    "description": "A failed Job with a fatal app error in pod logs.",
+    "ctx": {
+      "job": {"name": "migrate", "failed": 2, "conditions": [{"type": "Failed", "reason": "BackoffLimitExceeded", "message": "Job has reached the specified backoff limit"}]},
+      "describe": {"containers": [], "init_containers": []},
+      "pods": [{"reason": "Error", "last_terminated": "Error"}],
+      "logs": ["FATAL: relation \"orders\" already exists"],
+      "previous_logs": [], "events": []
+    },
+    "expected": {"issue": "Job Failed", "root_cause_contains": ["migrate"], "evidence_contains": ["orders"]}
+  },
+  {
+    "name": "ephemeral-storage-eviction",
+    "description": "EmptyDir over its limit → ephemeral-storage eviction.",
+    "ctx": {
+      "describe": {"containers": [], "init_containers": []},
+      "pods": [{"phase": "Failed", "reason": "Evicted", "message": "Usage of EmptyDir volume \"scratch\" exceeds the limit \"10Mi\"."}],
+      "events": [], "logs": [], "previous_logs": []
+    },
+    "expected": {"issue": "Pod Evicted: Ephemeral Storage", "min_confidence": 85}
+  },
+  {
+    "name": "hpa-cannot-scale",
+    "description": "HPA ScalingActive=False / FailedGetResourceMetric.",
+    "ctx": {
+      "describe": {"containers": [], "init_containers": []}, "pods": [], "events": [], "logs": [], "previous_logs": [],
+      "hpas": [{"name": "scaleme", "target": "scaleme", "conditions": [{"type": "ScalingActive", "status": "False", "reason": "FailedGetResourceMetric", "message": "no metrics"}]}]
+    },
+    "expected": {"issue": "HPA Cannot Scale", "root_cause_contains": ["FailedGetResourceMetric"]}
+  },
+  {
+    "name": "pdb-blocking-drains",
+    "description": "A PDB allowing 0 disruptions blocks voluntary evictions/drains.",
+    "ctx": {
+      "describe": {"containers": [], "init_containers": []}, "pods": [], "events": [], "logs": [], "previous_logs": [],
+      "pdbs": [{"name": "locked", "disruptions_allowed": 0, "current_healthy": 1, "desired_healthy": 1}]
+    },
+    "expected": {"issue": "PodDisruptionBudget Blocking", "root_cause_contains": ["0 voluntary disruptions"]}
+  },
+  {
+    "name": "healthy-running-no-signature",
+    "description": "NEGATIVE: a healthy Running pod must produce NO finding (false-positive guard).",
+    "ctx": {
+      "describe": {"containers": []},
+      "pods": [{"phase": "Running"}],
+      "events": [], "logs": [], "previous_logs": []
+    },
+    "expected": {"issue": null}
+  },
+  {
+    "name": "healthy-multicontainer-no-signature",
+    "description": "NEGATIVE: app + ready sidecar, normal logs → no finding.",
+    "ctx": {
+      "describe": {"containers": [{"name": "app", "ready": true}, {"name": "istio-proxy", "ready": true}]},
+      "pods": [{"phase": "Running"}],
+      "events": [], "logs": ["10.0.0.1 - - [GET /healthz HTTP/1.1] 200"], "previous_logs": []
+    },
+    "expected": {"issue": null}
+  }
+]
