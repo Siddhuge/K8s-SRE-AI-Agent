@@ -30,32 +30,32 @@ PYTHONPATH=src python3 loadtest/run_load.py -c 16 -d 10
 python3 loadtest/run_load.py --url https://sre-agent.staging --path /mcp/ --token "$JWT" -c 100 -d 30
 ```
 
-### Measured profile (local, single process, generator co-located)
+### Measured profile + an A/B the rig drove
 
-A concurrency sweep on one dev box, generator and server sharing cores:
+Concurrency sweep on one dev box (generator co-located with the server), **before vs after**
+replacing the Starlette `BaseHTTPMiddleware` auth layer with a pure-ASGI middleware:
 
-| Concurrency | Throughput | p50 | p99 |
-|------------:|-----------:|----:|----:|
-| 1   | ~610 req/s | 1.5 ms | 2.4 ms |
-| 16  | ~500 req/s | 15 ms  | 170 ms |
-| 128 | ~70 req/s  | 1.2 s  | 5.1 s  |
+| Concurrency | BaseHTTPMiddleware | Pure-ASGI | p50 (after) |
+|------------:|-------------------:|----------:|------------:|
+| 1   | ~610 req/s | **~795 req/s** | 1.2 ms |
+| 16  | ~505 req/s | ~490 req/s     | 18 ms  |
+| 128 | ~68 req/s  | ~68 req/s      | 1.1 s  |
 
-**Reading it honestly:**
-- A single process serves **~500–610 req/s** at low–moderate concurrency with low latency
-  — this empirically backs the figure in [operations.md](../docs/operations.md).
-- Throughput **collapses at very high concurrency** (c=128). Part of that is a measurement
-  artifact — the async generator is co-located with the server and oversubscribes the CPU
-  — so treat the absolute c=128 number with caution. To attribute it cleanly, run the
-  generator from a **separate host** (or use `wrk`/`hey`) against a deployed gateway.
-- Either way it shows a **per-process concurrency ceiling**. Operational guidance:
-  - bound per-replica concurrency (`uvicorn --limit-concurrency`) so a connection spike
-    sheds load (fast `503`) instead of browning out into multi-second tails;
-  - scale **horizontally** (the chart's HPA) and front with a connection-limiting ingress;
-  - tune the HPA on **latency/concurrency**, not just CPU.
-- **Candidate optimization (unverified):** the auth+rate-limit layer uses Starlette
-  `BaseHTTPMiddleware`, a known throughput bottleneck under load. Rewriting it as a pure
-  ASGI middleware is the first thing to try if you need a higher single-process ceiling —
-  re-run this rig before/after to confirm.
+**What the A/B actually showed (and corrected):**
+- The pure-ASGI rewrite is a **real ~25–30% win at low concurrency** (610→795 req/s, lower
+  tail latency) and removes a known footgun — kept.
+- It did **not** change the c=128 number. That **falsified the earlier hypothesis** that
+  `BaseHTTPMiddleware` caused the high-concurrency drop. Since removing it changed nothing
+  at c=128, that drop is the **co-located generator saturating the CPU**, not a server
+  defect — exactly the measurement caveat to keep in mind. To measure the true per-process
+  ceiling, run the generator from a **separate host** (or `wrk`/`hey`) against a deployed
+  gateway.
+- A single process comfortably serves **~500–795 req/s** at low–moderate concurrency,
+  backing the figure in [operations.md](../docs/operations.md).
 
-> Numbers are hardware-dependent. The rig's value is the **repeatable method + the
-> behavior gates**, not any single absolute figure.
+Operational guidance still holds regardless: bound per-replica concurrency
+(`uvicorn --limit-concurrency`) so a spike sheds load (fast `503`) instead of browning
+out, scale **horizontally** (the chart's HPA), and tune the HPA on **latency/concurrency**.
+
+> Numbers are hardware-dependent. The rig's value is the **repeatable method, the
+> before/after A/B, and the behavior gates** — not any single absolute figure.

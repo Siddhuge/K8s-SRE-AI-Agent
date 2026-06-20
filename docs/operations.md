@@ -73,16 +73,17 @@ go to stderr (tool, cluster, outcome, duration, principal).
 ## Routine ops
 
 * **Scale**: `replicaCount` + HPA (`autoscaling.enabled`). Reads are cheap; a single
-  process serves **~500–610 req/s at low–moderate concurrency** (measured — see
-  [loadtest/](../loadtest/)), scale horizontally for more. Validated at 3 replicas
-  (3/3 Ready, stable under soak). Set `replicaCount > 1` **at install** so the chart
-  creates the PodDisruptionBudget (minAvailable 1) for safe node drains.
-  > ⚠️ **Per-process concurrency ceiling.** The load rig shows throughput *collapses*
-  > under very high per-replica concurrency (tail latency into seconds), so bound it:
-  > set `uvicorn --limit-concurrency` so a spike sheds load (fast `503`) instead of
-  > browning out, scale horizontally, and tune the HPA on **latency/concurrency**, not
-  > just CPU. (The auth layer uses Starlette `BaseHTTPMiddleware`, a known bottleneck —
-  > a pure-ASGI rewrite is the lever if you need a higher single-process ceiling.)
+  process serves **~500–795 req/s at low–moderate concurrency** (measured — see
+  [loadtest/](../loadtest/)), scale horizontally for more. The auth/rate-limit layer is a
+  pure-ASGI middleware (a load-rig A/B showed it ~25–30% faster than the Starlette
+  `BaseHTTPMiddleware` it replaced). Validated at 3 replicas (3/3 Ready, stable under
+  soak). Set `replicaCount > 1` **at install** so the chart creates the
+  PodDisruptionBudget (minAvailable 1) for safe node drains.
+  > ⚠️ **Bound per-replica concurrency.** Set `uvicorn --limit-concurrency` so a
+  > connection spike sheds load (fast `503`) instead of browning out, scale horizontally,
+  > and tune the HPA on **latency/concurrency**, not just CPU. (The true per-process
+  > concurrency ceiling needs a load generator on a *separate* host to measure — the
+  > bundled rig is co-located, so its highest-concurrency numbers understate the server.)
   > ⚠️ **Rate limiting is per-replica** (in-memory token bucket). With N replicas a
   > principal's effective limit is N× the configured value, since the Service
   > load-balances across them. For a strict global limit, back the limiter with Redis

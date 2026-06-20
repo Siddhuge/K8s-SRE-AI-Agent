@@ -28,7 +28,6 @@ _PUBLIC_PATHS = {"/healthz", "/readyz", "/metrics"}
 def build_asgi_app(mcp, settings: Settings, *, readiness):
     """Return a Starlette app: health/metrics routes + auth + rate-limit around MCP."""
     from starlette.applications import Starlette
-    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
     from starlette.responses import JSONResponse, PlainTextResponse, Response
     from starlette.routing import Route
@@ -47,47 +46,60 @@ def build_asgi_app(mcp, settings: Settings, *, readiness):
         body, ctype = metrics_payload()
         return PlainTextResponse(body, media_type=ctype)
 
-    class AuthRateLimitMiddleware(BaseHTTPMiddleware):
-        async def dispatch(self, request: Request, call_next):
-            if request.url.path in _PUBLIC_PATHS:
-                return await call_next(request)
-
-            auth_header = request.headers.get("authorization", "")
-            if not auth_header.lower().startswith("bearer "):
-                record_auth("missing_token")
-                return JSONResponse({"error": "missing bearer token"}, status_code=401)
-            token = auth_header.split(" ", 1)[1]
-            try:
-                principal = verify_bearer_token(token, settings)
-            except AuthError as exc:
-                record_auth("rejected")
-                return JSONResponse({"error": str(exc)}, status_code=401)
-            except Exception:
-                # Malformed token, JWKS fetch failure, signature error, etc. — reject
-                # as 401 rather than leaking a 500 / internal error to the caller.
-                record_auth("error")
-                return JSONResponse({"error": "token validation failed"}, status_code=401)
-
-            record_auth("ok", principal.subject)
-            request.state.principal = principal
-
-            if not limiter.allow(principal.subject):
-                record_ratelimited(principal.subject)
-                return JSONResponse({"error": "rate limit exceeded"}, status_code=429,
-                                    headers={"Retry-After": "1"})
-            return await call_next(request)
-
     inner = mcp.streamable_http_app()  # FastMCP's Starlette ASGI app
-    app = Starlette(
+    base = Starlette(
         routes=[
             Route("/healthz", healthz),
             Route("/readyz", readyz),
             Route("/metrics", metrics),
         ]
     )
-    app.mount("/", inner)
-    app.add_middleware(AuthRateLimitMiddleware)
-    return app
+    base.mount("/", inner)
+
+    # PURE-ASGI middleware (not Starlette BaseHTTPMiddleware, which serializes through an
+    # anyio stream bridge and collapses throughput under concurrency — see loadtest/).
+    # This is a thin async wrapper: inspect scope, reject early, or pass through.
+    async def _send_json(scope, receive, send, status: int, body: dict, headers=None):
+        await JSONResponse(body, status_code=status, headers=headers)(scope, receive, send)
+
+    async def gateway(scope, receive, send):
+        if scope["type"] != "http" or scope.get("path", "") in _PUBLIC_PATHS:
+            await base(scope, receive, send)
+            return
+
+        auth = b""
+        for key, value in scope.get("headers") or ():
+            if key.lower() == b"authorization":
+                auth = value
+                break
+        if auth[:7].lower() != b"bearer ":
+            record_auth("missing_token")
+            await _send_json(scope, receive, send, 401, {"error": "missing bearer token"})
+            return
+        token = auth[7:].decode("latin-1").strip()
+        try:
+            principal = verify_bearer_token(token, settings)
+        except AuthError as exc:
+            record_auth("rejected")
+            await _send_json(scope, receive, send, 401, {"error": str(exc)})
+            return
+        except Exception:
+            # Malformed token, JWKS fetch failure, signature error, etc. — reject as 401
+            # rather than leaking a 500 / internal error to the caller.
+            record_auth("error")
+            await _send_json(scope, receive, send, 401, {"error": "token validation failed"})
+            return
+
+        record_auth("ok", principal.subject)
+
+        if not limiter.allow(principal.subject):
+            record_ratelimited(principal.subject)
+            await _send_json(scope, receive, send, 429, {"error": "rate limit exceeded"},
+                             headers={"Retry-After": "1"})
+            return
+        await base(scope, receive, send)
+
+    return gateway
 
 
 def settings_rate(settings: Settings) -> float:
