@@ -73,9 +73,16 @@ go to stderr (tool, cluster, outcome, duration, principal).
 ## Routine ops
 
 * **Scale**: `replicaCount` + HPA (`autoscaling.enabled`). Reads are cheap; a single
-  process does ~400–600 req/s, scale horizontally for more. Validated at 3 replicas
+  process serves **~500–610 req/s at low–moderate concurrency** (measured — see
+  [loadtest/](../loadtest/)), scale horizontally for more. Validated at 3 replicas
   (3/3 Ready, stable under soak). Set `replicaCount > 1` **at install** so the chart
   creates the PodDisruptionBudget (minAvailable 1) for safe node drains.
+  > ⚠️ **Per-process concurrency ceiling.** The load rig shows throughput *collapses*
+  > under very high per-replica concurrency (tail latency into seconds), so bound it:
+  > set `uvicorn --limit-concurrency` so a spike sheds load (fast `503`) instead of
+  > browning out, scale horizontally, and tune the HPA on **latency/concurrency**, not
+  > just CPU. (The auth layer uses Starlette `BaseHTTPMiddleware`, a known bottleneck —
+  > a pure-ASGI rewrite is the lever if you need a higher single-process ceiling.)
   > ⚠️ **Rate limiting is per-replica** (in-memory token bucket). With N replicas a
   > principal's effective limit is N× the configured value, since the Service
   > load-balances across them. For a strict global limit, back the limiter with Redis

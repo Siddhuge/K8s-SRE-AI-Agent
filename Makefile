@@ -1,4 +1,4 @@
-.PHONY: install lint type test test-unit test-integration eval kind-up kind-down demo image helm-lint
+.PHONY: install lint type test test-unit test-integration eval loadtest kind-up kind-down demo image helm-lint
 
 install:
 	pip install -e ".[dev,rag,azure,aws]"
@@ -19,6 +19,9 @@ test: test-unit
 
 eval: ## score the RCA detector engine against the labeled dataset (CI-gated)
 	PYTHONPATH=src python3 evals/run_eval.py
+
+loadtest: ## validate gateway behavior under concurrency (auth boundary + rate limiter)
+	PYTHONPATH=src python3 loadtest/validate_behavior.py
 
 kind-up:
 	kind create cluster --name sre-demo --wait 90s
