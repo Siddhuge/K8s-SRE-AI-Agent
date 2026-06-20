@@ -95,12 +95,30 @@ talks to your cluster using **your existing kubeconfig**.
 A long-running HTTP service multiple engineers (or automation) can call, with SSO,
 rate limiting, metrics, and a hardened pod.
 
-### 3.1 Build and push the image
+### 3.1 Get the image
+
+A prebuilt image is published on Docker Hub (agent **and** v2 dashboard in one image):
 
 ```bash
-ACR=<registry-host>            # e.g. myacr.azurecr.io or ghcr.io/org
-docker build -t "$ACR/k8s-sre-agent:1.0.0" .
-docker push  "$ACR/k8s-sre-agent:1.0.0"
+docker pull siddhuge/k8s-sre-agent:latest      # or :v2.0
+```
+
+Or build + push your own:
+
+```bash
+REG=<registry-host>            # e.g. myacr.azurecr.io, ghcr.io/org, or your Docker Hub user
+docker build -t "$REG/k8s-sre-agent:1.0.0" .
+docker push  "$REG/k8s-sre-agent:1.0.0"
+```
+
+The default entrypoint runs the **MCP gateway** (port 8080). Run the **v2 dashboard**
+from the same image instead:
+
+```bash
+docker run --rm -p 8081:8081 --entrypoint python \
+  -v "$HOME/.kube:/home/nonroot/.kube:ro" -v "$PWD/config:/app/config:ro" \
+  -e CLUSTERS_CONFIG=/app/config/clusters.yaml -e DASHBOARD_HOST=0.0.0.0 \
+  siddhuge/k8s-sre-agent:latest -m webapp.server
 ```
 
 ### 3.2 Install the read-only RBAC (the security boundary)
