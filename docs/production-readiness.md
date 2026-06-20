@@ -18,55 +18,61 @@ environment** to sign off. Nothing below is marked done unless it was actually r
 | No CI | GitHub Actions: ruff, mypy, unit tests, **kind integration job**, Docker build + Trivy scan, helm lint | [.github/workflows/ci.yaml](../.github/workflows/ci.yaml) |
 | Helm not deployable | `/readyz` probe, PDB, HPA, ServiceMonitor, hardened securityContext | `deploy/helm` |
 
-**Test status:** 17 tests green (13 unit + 4 live integration). `ruff` clean. `helm lint` clean.
+**Test status:** 67 tests green (unit + live integration; 38 live-backend tests run in the
+CI integration job). `ruff` clean, `mypy --strict` clean, `helm lint` clean, Docker image
+builds **and boots** (`build_server()` constructs the full MCP server in the distroless image).
 
-## ✅ Now validated live (against real backends on a kind cluster)
+## ✅ Now validated live (against real backends: kind, a real AKS cluster, real Slack/pgvector)
 
 Since the original assessment, these were exercised end-to-end against real systems —
-each pass found and fixed genuine bugs (the kind only live testing surfaces):
+each pass found and fixed genuine bugs that only live testing surfaces:
 
 | Backend | Tools validated | Bugs found & fixed |
 |---------|-----------------|--------------------|
-| **Kubernetes** | all read tools + `rca_diagnose` across 9 failure classes | `logs_pod` bytes/`b'...'`; namespace-wide event leakage; false change-attribution; mid-restart flakiness; liveness fallback after event expiry |
+| **Kubernetes** | all read tools + `rca_diagnose` across 9+ failure classes | `logs_pod` bytes/`b'...'`; namespace-wide event leakage; false change-attribution; mid-restart flakiness; liveness fallback after event expiry; init-container/Job/eviction/HPA/PDB detectors |
 | **Prometheus** | `prom_query`, `metric_cpu/memory/restarts/disk` | range queries 400'd (`now-1h` → real unix start/end); `metric_disk` hard-coded `mountpoint="/"` |
-| **Loki** | `loki_query` | (clean) |
+| **Loki / Grafana** | `loki_query`, `grafana_panel` | (clean) |
 | **Istio** | `istio_get_*` + `istio_mesh_analyze` (subset, mTLS, gateway) + sidecar detector | (new tooling, validated) |
 | **ArgoCD** | `argocd_app/sync_status/history/rollback_info` | added `conditions` (ComparisonError) so failures explain themselves |
 | **GitHub Actions** | `github_actions_runs`, `recent_deployments`, `compare_deployments` | empty-token sent `Bearer ` → 401; now omits auth for public repos |
+| **GitLab CI** | `gitlab_pipelines` | clean (the 403 seen was a PAT scope issue — needed `read_api` — not a tool bug) |
+| **RAG (pgvector)** | hybrid vector+lexical retrieval, tenant RLS | `SET app.tenants` can't bind → `set_config`; NULL `service` AmbiguousParameter → `::text`; RLS silently bypassed by owners → `FORCE ROW LEVEL SECURITY` + least-priv role (proven with `sre_ro`) |
+| **Full MCP → Claude loop** | agent registered with Claude Code; an incident driven end-to-end | the model correctly **overrode** the engine's 94% secret-rotation verdict, diagnosing a missing DB service — tool planning + hypothesis arbitration validated |
+| **AKS Workload Identity** | `azure_workload` federated-token path + `rca_diagnose` on managed AKS | **bearer header sent via `api_key` → no `Authorization` header → 401**, fixed to `set_default_header` (also fixes EKS/IRSA); **one forbidden read aborted the whole RCA**, fixed to degrade per-read. Also confirmed: write → 403, secret values → 403 (read-only holds under Azure RBAC) |
+| **Slack** | `slack_post` | clean — real `chat.postMessage` succeeded; outward-facing allow-list guard refuses non-listed channels before any API call |
 
-## ⚠️ Still requires YOUR staging environment to validate
+## ⚠️ Still requires YOUR environment to validate
 
 Written defensively and unit-tested, but not yet run against the real system:
 
-| Item | Why it needs staging | Risk if skipped |
-|------|----------------------|-----------------|
-| **GitLab CI tool** | No GitLab instance was available to test against (GitHub was) | `gitlab_pipelines` may have field-mapping bugs until run |
-| **Jira / ServiceNow / Slack / Teams** | Need real tenants/tokens | incident read/post unproven |
-| **AKS Workload Identity / EKS IRSA token paths** | Need a real AKS/EKS cluster + federated identity to exercise | auth to those clusters unproven |
-| **Full MCP → Claude loop** | Needs the agent registered with Claude + an API key; the *reasoning* layer (tool planning, hypothesis arbitration) has only been reasoned about, not run | tiered routing / caching behavior unvalidated |
-| **RAG retrieval quality** | Needs a real pgvector instance + your ingested runbooks; retrieval recall must be measured on your corpus | runbook matches unproven |
-| **Load / soak / failover** | No load test yet | capacity + HPA thresholds unproven |
+| Item | Why it needs your environment | Risk if skipped |
+|------|-------------------------------|-----------------|
+| **Jira / ServiceNow / Teams** | Need real tenants/tokens/webhook (not available) | incident read / Teams post unproven (Slack is proven; these share the same guarded HTTP pattern) |
+| **EKS IRSA token path** | Needs a real EKS cluster | optional — shares the exact `set_default_header` code path **already proven on AKS**, so low risk |
+| **Load / soak / failover at scale** | Soak validated on kind at 3 replicas (3/3 Ready, stable); full capacity + HPA-threshold tuning needs your traffic profile | thresholds may need tuning |
 
 ## Recommended path to "trusted in prod"
 
 1. Deploy to staging via the Helm chart with `rbac.scope: namespaced` for one tenant.
-2. Point each integration at the real backend and run a smoke RCA per failure class
-   (use the scenarios in [incident-scenarios.md](incident-scenarios.md)) — fix any
-   field-mapping bugs that surface (the `logs_pod` fix is the template).
-3. Exercise the AKS/EKS token paths against a real cluster.
-4. Register with Claude, run the full loop on shadow/replayed incidents, and confirm
-   confidence scores + tiered routing behave.
-5. Measure RAG recall on a labeled incident→runbook set.
-6. Load-test the gateway; tune HPA/PDB/rate-limit.
-7. Pen-test the auth boundary and the read-only RBAC (attempt a write — must 403).
+2. Point each remaining integration (Jira/ServiceNow/Teams) at the real backend and run
+   a smoke RCA + post — fix any field-mapping bugs that surface (the `logs_pod` and
+   `set_default_header` fixes are the template).
+3. (Optional) Exercise the EKS IRSA token path against a real cluster — the shared code
+   is already proven on AKS.
+4. Measure RAG recall on a labeled incident→runbook set from your own corpus.
+5. Load-test the gateway at your traffic profile; tune HPA/PDB/rate-limit.
+6. Pen-test the auth boundary and the read-only RBAC (attempt a write — must 403;
+   verified on AKS, re-confirm in your tenant).
 
 ## Bottom line
 
-The **core plus the Kubernetes, Prometheus, Loki, Istio, ArgoCD and GitHub integrations
-are production-ready and proven against real backends** — read-only security model,
-resilient tools, real change-correlation, enforced auth, health/metrics, rate limiting,
-CI that stands up all of those stacks, and a deployable hardened chart. Live testing
-found and fixed ~10 genuine bugs that fixture tests never would. What **still needs a
-staging pass** is narrower now: GitLab, the incident systems (Jira/ServiceNow/Slack/
-Teams), the cloud-auth token paths (AKS/EKS), the full MCP→Claude reasoning loop, RAG
-recall on your corpus, and load/failover — integration validation, not redesign.
+The **core and almost every integration are production-ready and proven against real
+backends** — Kubernetes, Prometheus, Loki, Grafana, Istio, ArgoCD, GitHub, GitLab, the
+RAG pipeline, the full MCP→Claude reasoning loop, **AKS Workload Identity cloud-auth**,
+and **Slack** notifications. The read-only security model holds under real Azure RBAC
+(writes and secret values → 403). Live testing found and fixed ~12 genuine bugs that
+fixture tests never would — including two on the real AKS cluster (the bearer-auth header
+and the RCA's resilience to denied reads) that no mock could have caught. What **still
+needs your environment** is narrow: Jira/ServiceNow/Teams (no tenants available),
+optional EKS (code proven via AKS), RAG recall on your corpus, and load tuning at your
+traffic profile — integration validation, not redesign.
