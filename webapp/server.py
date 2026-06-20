@@ -6,18 +6,20 @@ DASHBOARD_OIDC_CLIENT_ID is set (see webapp/auth.py).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from . import auth, chat
-from .agent_tools import tool_catalog
+from .agent_tools import collect_tools, tool_catalog
 
 _STATIC = Path(__file__).parent / "static"
 _REACH_TIMEOUT = float(os.environ.get("DASHBOARD_REACH_TIMEOUT", "3.0"))
@@ -57,6 +59,35 @@ async def api_clusters(_req: Request) -> JSONResponse:
 
 async def api_tools(_req: Request) -> JSONResponse:
     return JSONResponse({"tools": tool_catalog()})
+
+
+_TOOLS: dict | None = None
+
+
+def _tools() -> dict:
+    global _TOOLS
+    if _TOOLS is None:
+        _TOOLS = collect_tools()
+    return _TOOLS
+
+
+async def api_namespace_overview(req: Request) -> JSONResponse:
+    """Drill-down: pods + deployments + recent events for one cluster/namespace.
+    Uses the read tools (tenant-guarded — a disallowed namespace is refused)."""
+    cluster, ns = req.path_params["cluster"], req.path_params["ns"]
+    tools = _tools()
+
+    async def call(name: str):
+        try:
+            return await run_in_threadpool(lambda: tools[name](namespace=ns, cluster=cluster))
+        except Exception as exc:  # noqa: BLE001 — surface per-section, don't 500 the page
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    pods, deployments, events = await asyncio.gather(
+        call("k8s_get_pods"), call("k8s_get_deployments"), call("k8s_get_events")
+    )
+    return JSONResponse({"cluster": cluster, "namespace": ns,
+                         "pods": pods, "deployments": deployments, "events": events})
 
 
 async def api_me(req: Request) -> JSONResponse:
@@ -155,6 +186,7 @@ def session_auth(app, cfg):
 
 routes = [
     Route("/api/clusters", api_clusters),
+    Route("/api/clusters/{cluster}/namespaces/{ns}", api_namespace_overview),
     Route("/api/tools", api_tools),
     Route("/api/me", api_me),
     Route("/api/chat", api_chat, methods=["POST"]),

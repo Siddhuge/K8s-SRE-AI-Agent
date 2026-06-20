@@ -86,6 +86,40 @@ def test_chat_fallback_without_api_key(monkeypatch):
     assert out["llm"] is False and "ANTHROPIC_API_KEY" in out["reply"]
 
 
+def test_namespace_overview_drilldown(monkeypatch):
+    monkeypatch.setattr(server, "_TOOLS", {
+        "k8s_get_pods": lambda namespace, cluster: [
+            {"name": "api-1", "phase": "Running", "reason": "CrashLoopBackOff", "restarts": 3, "ready": "0/1", "node": "n1"}],
+        "k8s_get_deployments": lambda namespace, cluster: [{"name": "api", "ready": "0/1", "image": "api:1"}],
+        "k8s_get_events": lambda namespace, cluster: [{"type": "Warning", "reason": "BackOff", "object": "Pod/api-1", "message": "x", "age": "1m"}],
+    })
+
+    async def run():
+        async with _client() as c:
+            d = (await c.get("/api/clusters/prod/namespaces/payments")).json()
+            assert d["cluster"] == "prod" and d["namespace"] == "payments"
+            assert d["pods"][0]["reason"] == "CrashLoopBackOff"
+            assert d["deployments"][0]["name"] == "api"
+            assert d["events"][0]["type"] == "Warning"
+    asyncio.run(run())
+
+
+def test_namespace_overview_degrades_on_tool_error(monkeypatch):
+    def boom(namespace, cluster):
+        raise RuntimeError("forbidden")
+    monkeypatch.setattr(server, "_TOOLS", {
+        "k8s_get_pods": lambda namespace, cluster: [],
+        "k8s_get_deployments": boom,             # one section fails → reported, page still loads
+        "k8s_get_events": lambda namespace, cluster: [],
+    })
+
+    async def run():
+        async with _client() as c:
+            d = (await c.get("/api/clusters/prod/namespaces/payments")).json()
+            assert d["pods"] == [] and "error" in d["deployments"]
+    asyncio.run(run())
+
+
 def test_chat_empty_message_is_400():
     async def run():
         async with _client() as c:
