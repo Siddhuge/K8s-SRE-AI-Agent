@@ -20,10 +20,10 @@ from types import SimpleNamespace
 
 import httpx
 
-logging.disable(logging.CRITICAL)  # quiet the per-request audit logs during the burst
-
 from k8s_sre_agent import middleware
 from k8s_sre_agent.config import Settings
+
+logging.disable(logging.CRITICAL)  # quiet the per-request audit logs during the burst
 
 BURST = 20
 RATE = 5.0
