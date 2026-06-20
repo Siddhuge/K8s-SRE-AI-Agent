@@ -14,3 +14,7 @@ terraform/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 terraform/terraform.tfvars
+
+# Coverage data (generated)
+.coverage
+htmlcov/
