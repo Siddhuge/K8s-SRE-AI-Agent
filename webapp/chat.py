@@ -69,6 +69,64 @@ def run_chat(message: str, history: list[dict] | None = None) -> dict:
     return {"reply": "Stopped after the maximum number of tool steps.", "trace": trace, "llm": True}
 
 
+def _sse(event_type: str, **data) -> str:
+    return f"data: {json.dumps({'type': event_type, **data})}\n\n"
+
+
+def stream_chat(message: str, history: list[dict] | None = None):
+    """Server-Sent-Events generator: streams `delta` (text), `tool` (a tool call), and a
+    final `done` event. Sync generator — Starlette runs it in a threadpool."""
+    if not chat_available():
+        out = _fallback(message)
+        yield _sse("delta", text=out["reply"])
+        yield _sse("done", trace=out["trace"], llm=False)
+        return
+    try:
+        import anthropic
+    except ImportError:
+        yield _sse("delta", text="Install the chat extra: `pip install anthropic`.")
+        yield _sse("done", trace=[], llm=False)
+        return
+
+    tools = collect_tools()
+    schemas = [to_anthropic_schema(n, f) for n, f in tools.items()]
+    client = anthropic.Anthropic()
+    messages = list(history or []) + [{"role": "user", "content": message}]
+    trace: list[dict] = []
+
+    for _ in range(_MAX_TOOL_ROUNDS):
+        with client.messages.stream(
+            model=_MODEL, max_tokens=1500, system=_SYSTEM, tools=schemas, messages=messages
+        ) as stream:
+            for text in stream.text_stream:          # live token-by-token output
+                yield _sse("delta", text=text)
+            final = stream.get_final_message()
+
+        if final.stop_reason != "tool_use":
+            yield _sse("done", trace=trace, llm=True)
+            return
+
+        messages.append({"role": "assistant", "content": final.content})
+        results = []
+        for block in final.content:
+            if getattr(block, "type", "") != "tool_use":
+                continue
+            yield _sse("tool", tool=block.name)       # show the live "🔧 calling X" chip
+            fn = tools.get(block.name)
+            try:
+                output = fn(**block.input) if fn else {"error": f"unknown tool {block.name}"}
+            except Exception as exc:  # noqa: BLE001
+                output = {"error": f"{type(exc).__name__}: {exc}"}
+            trace.append({"tool": block.name, "input": block.input})
+            results.append({
+                "type": "tool_result", "tool_use_id": block.id,
+                "content": json.dumps(output, default=str)[:20000],
+            })
+        messages.append({"role": "user", "content": results})
+
+    yield _sse("done", trace=trace, llm=True)
+
+
 def _fallback(message: str) -> dict:
     """No API key: handle a couple of intents directly so the dashboard isn't dead."""
     tools = collect_tools()

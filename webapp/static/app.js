@@ -78,26 +78,60 @@ function traceHtml(trace) {
   return `<div class="trace">${trace.map((t) => `<span class="chip">🔧 ${escapeHtml(t.tool)}</span>`).join("")}</div>`;
 }
 
+// Streamed chat over SSE: live token-by-token text + tool-call chips.
 async function sendMessage(text) {
   addMessage("user", escapeHtml(text));
   history.push({ role: "user", content: text });
-  const thinking = addMessage("agent", `<span class="typing">investigating…</span>`);
+  const bubble = addMessage("agent", `<span class="typing">investigating…</span>`).querySelector(".bubble");
   $("#send").disabled = true;
+
+  let reply = "";
+  const trace = [];
+  const render = () => { bubble.innerHTML = renderMarkdown(reply) + traceHtml(trace); $("#messages").scrollTop = 1e9; };
+
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch("/api/chat/stream", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text, history: history.slice(0, -1) }),
     });
-    const data = await res.json();
-    const reply = data.reply || data.error || "(no response)";
-    thinking.querySelector(".bubble").innerHTML = renderMarkdown(reply) + traceHtml(data.trace);
+    if (res.status === 401) { window.location = "/auth/login"; return; }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();                         // keep the trailing partial
+      for (const ev of events) {
+        const line = ev.replace(/^data: /, "").trim();
+        if (!line) continue;
+        const msg = JSON.parse(line);
+        if (msg.type === "delta") { reply += msg.text; render(); }
+        else if (msg.type === "tool") { trace.push({ tool: msg.tool }); render(); }
+      }
+    }
+    if (!reply) reply = "(no response)";
+    render();
     history.push({ role: "assistant", content: reply });
   } catch (e) {
-    thinking.querySelector(".bubble").innerHTML = `Error: ${escapeHtml(String(e))}`;
+    bubble.innerHTML = `Error: ${escapeHtml(String(e))}`;
   } finally {
     $("#send").disabled = false;
     $("#chat-input").focus();
   }
+}
+
+async function loadMe() {
+  try {
+    const me = await (await fetch("/api/me")).json();
+    const el = $("#user");
+    if (me.auth_enabled && me.user) {
+      el.innerHTML = `${escapeHtml(me.user.name || me.user.sub)} <a href="/auth/logout">log out</a>`;
+    }
+  } catch { /* non-critical */ }
 }
 
 // --- wiring ---
@@ -111,6 +145,7 @@ $("#chat-form").addEventListener("submit", (e) => {
 });
 $("#refresh").addEventListener("click", loadClusters);
 
+loadMe();
 loadClusters();
 loadTools();
 setInterval(loadClusters, 15000);   // live-ish reachability

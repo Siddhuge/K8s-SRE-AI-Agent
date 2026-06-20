@@ -35,8 +35,42 @@ is configured for show up here with live reachability.
 |---|---|
 | `GET /api/clusters` | Configured clusters + live per-cluster reachability (bounded probe) |
 | `GET /api/tools` | The read-only tools the chat can use |
-| `POST /api/chat` | `{message, history}` → Claude runs an agentic tool-use loop and replies |
+| `GET /api/me` | Current user + whether SSO is enabled |
+| `POST /api/chat` | `{message, history}` → full reply (non-streaming) |
+| `POST /api/chat/stream` | Same, **streamed over SSE** — live token-by-token text + `tool` events |
+| `/auth/login` · `/auth/callback` · `/auth/logout` | OIDC browser SSO |
 | `/` , `/healthz` | Dashboard UI + health |
+
+## Streaming chat (live "typing")
+
+`POST /api/chat/stream` returns `text/event-stream`. The UI reads it with `fetch` +
+`ReadableStream` and renders incrementally:
+
+- `{"type":"delta","text":"…"}` — a chunk of the model's answer (appended live)
+- `{"type":"tool","tool":"rca_diagnose"}` — emitted when the agent calls a tool (shown as a chip)
+- `{"type":"done","trace":[…],"llm":true}` — end of turn
+
+It works token-by-token with an API key; without one it streams the single fallback reply.
+
+## SSO (browser login)
+
+OFF by default (local dev). Enable the OIDC Authorization-Code flow (PKCE) by setting:
+
+```bash
+DASHBOARD_OIDC_ISSUER=https://login.microsoftonline.com/<tenant>/v2.0   # or any OIDC IdP
+DASHBOARD_OIDC_CLIENT_ID=<dashboard-app-client-id>
+DASHBOARD_OIDC_CLIENT_SECRET=<secret>
+DASHBOARD_BASE_URL=https://sre-dashboard.example          # for the redirect URI
+DASHBOARD_OIDC_REQUIRED_GROUPS=sre-readonly,platform-oncall   # optional group gate
+DASHBOARD_SECRET_KEY=<random-32+-bytes>                   # signs the session cookie
+```
+
+Register `${DASHBOARD_BASE_URL}/auth/callback` as a redirect URI in the IdP. When enabled,
+every path except `/healthz` and `/auth/*` requires a valid session: unauthenticated
+browser requests are 302'd to the IdP; `/api/*` returns 401. The id_token is validated
+against the IdP's JWKS (issuer + audience + signature), optional group membership is
+enforced, and a short-lived **HMAC-signed, httponly** session cookie is set. State/PKCE are
+carried in a separate signed cookie between login and callback.
 
 **With an API key**, the chat runs a real tool-use loop: Claude calls `rca_diagnose`,
 `k8s_get_pods`, `logs_pod`, `prom_query`, etc. (the exact MCP tool functions, captured —
@@ -50,12 +84,16 @@ an RCA from a simple command, and tells the user how to enable full chat.
   are explicitly excluded. The chat cannot mutate anything.
 - It inherits the agent's tenant `allowedNamespaces` guards — a question about a
   disallowed namespace is refused by the underlying tool.
-- This dev server has **no inbound auth** of its own — put it behind your SSO/ingress (or
-  the v1 gateway's auth) before exposing it beyond localhost.
+- **Browser SSO** (OIDC) protects every path when configured (see below); off by default
+  for local dev. Sessions are HMAC-signed httponly cookies, optionally group-gated.
+  Terminate TLS at your ingress in production.
 
 ## Architecture
 
 `agent_tools.py` captures the MCP tool functions and turns their signatures into Anthropic
-tool schemas. `chat.py` runs the tool-use loop (or the keyless fallback). `server.py` is a
-small Starlette app serving the JSON APIs + the static UI in `static/`. Tests live in
-`tests/test_webapp.py`.
+tool schemas. `chat.py` runs the tool-use loop with both a non-streaming (`run_chat`) and an
+SSE-streaming (`stream_chat`) path, plus the keyless fallback. `auth.py` is the OIDC SSO
+(discovery, PKCE, id_token validation via JWKS, HMAC-signed sessions). `server.py` is a
+small Starlette app wiring the JSON APIs, the SSO routes + middleware, and the static UI in
+`static/`. Tests: `tests/test_webapp.py` + `tests/test_webapp_auth.py` (no IdP/API key
+needed). No new dependencies — auth reuses `httpx` + `pyjwt`.
